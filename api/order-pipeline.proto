@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package order.sv1;
+
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/order/v1;orderpb";
+
+// Orders
+message Order {
+    string id = 1;
+    string customer_id = 2;
+    repeated OrderItems items = 3;
+    OrderStatus status = 4;
+}
+
+message OrderItems{
+    string product_id = 1;
+    int32 quantity = 2;
+}
+
+enum OrderStatus {
+    PENDING = 0;
+    PAID = 1;
+    SHIPPED = 2;
+    COMPLETED = 3;
+    CANCELLED = 4;
+}
+
+message CreateOrderRequest{
+    string customer_id = 1;
+    repeated OrderItems items = 2;
+}
+
+message CreateOrderResponse{
+    string order_id = 1;
+}
+
+message GetOrderRequest {
+    string order_id = 1;
+}
+
+message GetOrderResponse {
+    Order order = 1;
+}
+
+// Payment
+message ProcessPaymentRequest {
+    string order_id = 1;
+    PaymentMethod payment_method = 2;
+    double amount = 3;
+}
+
+message ProcessPaymentResponse {
+    string payment_id = 1;
+    PaymentStatus status = 2;
+}
+
+message PaymentMethod {
+    oneof method {
+        CreditCard credit_card = 1;
+        BankTransfer bank_transfer = 2;
+        DigitalWallet digital_wallet = 3;
+    }
+}
+
+message CreditCard {
+    string card_number = 1;
+    string expiry_month = 2;
+    string expiry_year = 3;
+    string cvv = 4;
+    string cardholder_name = 5;
+}
+
+message BankTransfer {
+    string account_number = 1;
+    string routing_number = 2;
+    string bank_name = 3;
+}
+
+message DigitalWallet {
+    string wallet_id = 1;
+    string provider = 2;
+}
+
+enum PaymentStatus {
+    PAYMENT_PENDING = 0;
+    PAYMENT_PROCESSING = 1;
+    PAYMENT_COMPLETED = 2;
+    PAYMENT_FAILED = 3;
+    PAYMENT_REFUNDED = 4;
+}
+
+// Shipping
+message CreateShipmentRequest {
+    string order_id = 1;
+    ShippingAddress shipping_address = 2;
+    ShippingMethod shipping_method = 3;
+}
+
+message CreateShipmentResponse {
+    string shipment_id = 1;
+    string tracking_number = 2;
+    string estimated_delivery = 3;
+}
+
+message ShippingAddress {
+    string street = 1;
+    string city = 2;
+    string state = 3;
+    string postal_code = 4;
+    string country = 5;
+    string recipient_name = 6;
+    string phone_number = 7;
+}
+
+message ShippingMethod {
+    string carrier = 1;
+    string service_type = 2;
+    double cost = 3;
+    int32 estimated_days = 4;
+}
+
+message TrackShipmentRequest {
+    string shipment_id = 1;
+}
+
+message TrackShipmentResponse {
+    string shipment_id = 1;
+    ShipmentStatus status = 2;
+    string current_location = 3;
+    string estimated_delivery = 4;
+    repeated ShipmentEvent events = 5;
+}
+
+message ShipmentEvent {
+    string timestamp = 1;
+    string location = 2;
+    string description = 3;
+    ShipmentStatus status = 4;
+}
+
+enum ShipmentStatus {
+    SHIPMENT_CREATED = 0;
+    SHIPMENT_PICKED_UP = 1;
+    SHIPMENT_IN_TRANSIT = 2;
+    SHIPMENT_OUT_FOR_DELIVERY = 3;
+    SHIPMENT_DELIVERED = 4;
+    SHIPMENT_EXCEPTION = 5;
+}
+
+// Services
+service OrderService {
+    rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+    rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+    rpc UpdateOrderStatus(UpdateOrderStatusRequest) returns (UpdateOrderStatusResponse);
+}
+
+service PaymentService {
+    rpc ProcessPayment(ProcessPaymentRequest) returns (ProcessPaymentResponse);
+}
+
+service ShippingService {
+    rpc CreateShipment(CreateShipmentRequest) returns (CreateShipmentResponse);
+    rpc TrackShipment(TrackShipmentRequest) returns (TrackShipmentResponse);
+}
+
+// Additional messages for order updates
+message UpdateOrderStatusRequest {
+    string order_id = 1;
+    OrderStatus status = 2;
+}
+
+message UpdateOrderStatusResponse {
+    bool success = 1;
+    string message = 2;
+}
