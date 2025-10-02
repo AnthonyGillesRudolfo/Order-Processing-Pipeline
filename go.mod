@@ -3,6 +3,8 @@ module github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline
 go 1.25.1
 
 require (
+	github.com/google/uuid v1.6.0
+	github.com/lib/pq v1.10.9
 	github.com/restatedev/sdk-go v0.20.0
 	google.golang.org/protobuf v1.36.9
 )
@@ -13,7 +15,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.3 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect

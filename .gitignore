@@ -1,0 +1,21 @@
+# Binaries
+order-processing-pipeline
+*.exe
+*.out
+
+# Go build cache
+bin/
+build/
+
+# Env & secrets
+.env
+
+# macOS
+.DS_Store
+
+# Restate / Postgres local data (if any)
+data/
+pgdata/
+
+# Markdowns
+*.md

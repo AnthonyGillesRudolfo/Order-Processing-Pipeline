@@ -24,28 +24,34 @@ const (
 type OrderStatus int32
 
 const (
-	OrderStatus_PENDING   OrderStatus = 0
-	OrderStatus_PAID      OrderStatus = 1
-	OrderStatus_SHIPPED   OrderStatus = 2
-	OrderStatus_COMPLETED OrderStatus = 3
-	OrderStatus_CANCELLED OrderStatus = 4
+	OrderStatus_PENDING    OrderStatus = 0 // Order created, payment not yet completed
+	OrderStatus_PROCESSING OrderStatus = 1 // Payment completed, shipment not yet created
+	OrderStatus_SHIPPED    OrderStatus = 2 // Shipment created and in transit
+	OrderStatus_DELIVERED  OrderStatus = 3 // Shipment delivered to customer
+	OrderStatus_CANCELLED  OrderStatus = 4 // Order cancelled (payment failed or other issues)
+	OrderStatus_PAID       OrderStatus = 5 // Deprecated: use PROCESSING instead
+	OrderStatus_COMPLETED  OrderStatus = 6 // Deprecated: use DELIVERED instead
 )
 
 // Enum value maps for OrderStatus.
 var (
 	OrderStatus_name = map[int32]string{
 		0: "PENDING",
-		1: "PAID",
+		1: "PROCESSING",
 		2: "SHIPPED",
-		3: "COMPLETED",
+		3: "DELIVERED",
 		4: "CANCELLED",
+		5: "PAID",
+		6: "COMPLETED",
 	}
 	OrderStatus_value = map[string]int32{
-		"PENDING":   0,
-		"PAID":      1,
-		"SHIPPED":   2,
-		"COMPLETED": 3,
-		"CANCELLED": 4,
+		"PENDING":    0,
+		"PROCESSING": 1,
+		"SHIPPED":    2,
+		"DELIVERED":  3,
+		"CANCELLED":  4,
+		"PAID":       5,
+		"COMPLETED":  6,
 	}
 )
 
@@ -453,6 +459,8 @@ func (x *GetOrderRequest) GetOrderId() string {
 type GetOrderResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Order         *Order                 `protobuf:"bytes,1,opt,name=order,proto3" json:"order,omitempty"`
+	PaymentInfo   *PaymentInfo           `protobuf:"bytes,2,opt,name=payment_info,json=paymentInfo,proto3" json:"payment_info,omitempty"`
+	ShipmentInfo  *ShipmentInfo          `protobuf:"bytes,3,opt,name=shipment_info,json=shipmentInfo,proto3" json:"shipment_info,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -494,6 +502,174 @@ func (x *GetOrderResponse) GetOrder() *Order {
 	return nil
 }
 
+func (x *GetOrderResponse) GetPaymentInfo() *PaymentInfo {
+	if x != nil {
+		return x.PaymentInfo
+	}
+	return nil
+}
+
+func (x *GetOrderResponse) GetShipmentInfo() *ShipmentInfo {
+	if x != nil {
+		return x.ShipmentInfo
+	}
+	return nil
+}
+
+// Comprehensive payment information for order tracking
+type PaymentInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	Status        PaymentStatus          `protobuf:"varint,2,opt,name=status,proto3,enum=order.sv1.PaymentStatus" json:"status,omitempty"`
+	Amount        float64                `protobuf:"fixed64,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	PaymentMethod string                 `protobuf:"bytes,4,opt,name=payment_method,json=paymentMethod,proto3" json:"payment_method,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PaymentInfo) Reset() {
+	*x = PaymentInfo{}
+	mi := &file_order_pipeline_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PaymentInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PaymentInfo) ProtoMessage() {}
+
+func (x *PaymentInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_order_pipeline_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PaymentInfo.ProtoReflect.Descriptor instead.
+func (*PaymentInfo) Descriptor() ([]byte, []int) {
+	return file_order_pipeline_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PaymentInfo) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+func (x *PaymentInfo) GetStatus() PaymentStatus {
+	if x != nil {
+		return x.Status
+	}
+	return PaymentStatus_PAYMENT_PENDING
+}
+
+func (x *PaymentInfo) GetAmount() float64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *PaymentInfo) GetPaymentMethod() string {
+	if x != nil {
+		return x.PaymentMethod
+	}
+	return ""
+}
+
+// Comprehensive shipment information for order tracking
+type ShipmentInfo struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ShipmentId        string                 `protobuf:"bytes,1,opt,name=shipment_id,json=shipmentId,proto3" json:"shipment_id,omitempty"`
+	TrackingNumber    string                 `protobuf:"bytes,2,opt,name=tracking_number,json=trackingNumber,proto3" json:"tracking_number,omitempty"`
+	Carrier           string                 `protobuf:"bytes,3,opt,name=carrier,proto3" json:"carrier,omitempty"`
+	Status            ShipmentStatus         `protobuf:"varint,4,opt,name=status,proto3,enum=order.sv1.ShipmentStatus" json:"status,omitempty"`
+	CurrentLocation   string                 `protobuf:"bytes,5,opt,name=current_location,json=currentLocation,proto3" json:"current_location,omitempty"`
+	EstimatedDelivery string                 `protobuf:"bytes,6,opt,name=estimated_delivery,json=estimatedDelivery,proto3" json:"estimated_delivery,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ShipmentInfo) Reset() {
+	*x = ShipmentInfo{}
+	mi := &file_order_pipeline_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShipmentInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShipmentInfo) ProtoMessage() {}
+
+func (x *ShipmentInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_order_pipeline_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShipmentInfo.ProtoReflect.Descriptor instead.
+func (*ShipmentInfo) Descriptor() ([]byte, []int) {
+	return file_order_pipeline_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ShipmentInfo) GetShipmentId() string {
+	if x != nil {
+		return x.ShipmentId
+	}
+	return ""
+}
+
+func (x *ShipmentInfo) GetTrackingNumber() string {
+	if x != nil {
+		return x.TrackingNumber
+	}
+	return ""
+}
+
+func (x *ShipmentInfo) GetCarrier() string {
+	if x != nil {
+		return x.Carrier
+	}
+	return ""
+}
+
+func (x *ShipmentInfo) GetStatus() ShipmentStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ShipmentStatus_SHIPMENT_CREATED
+}
+
+func (x *ShipmentInfo) GetCurrentLocation() string {
+	if x != nil {
+		return x.CurrentLocation
+	}
+	return ""
+}
+
+func (x *ShipmentInfo) GetEstimatedDelivery() string {
+	if x != nil {
+		return x.EstimatedDelivery
+	}
+	return ""
+}
+
 // Payment
 type ProcessPaymentRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -506,7 +682,7 @@ type ProcessPaymentRequest struct {
 
 func (x *ProcessPaymentRequest) Reset() {
 	*x = ProcessPaymentRequest{}
-	mi := &file_order_pipeline_proto_msgTypes[6]
+	mi := &file_order_pipeline_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -518,7 +694,7 @@ func (x *ProcessPaymentRequest) String() string {
 func (*ProcessPaymentRequest) ProtoMessage() {}
 
 func (x *ProcessPaymentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[6]
+	mi := &file_order_pipeline_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -531,7 +707,7 @@ func (x *ProcessPaymentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessPaymentRequest.ProtoReflect.Descriptor instead.
 func (*ProcessPaymentRequest) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{6}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ProcessPaymentRequest) GetOrderId() string {
@@ -565,7 +741,7 @@ type ProcessPaymentResponse struct {
 
 func (x *ProcessPaymentResponse) Reset() {
 	*x = ProcessPaymentResponse{}
-	mi := &file_order_pipeline_proto_msgTypes[7]
+	mi := &file_order_pipeline_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -577,7 +753,7 @@ func (x *ProcessPaymentResponse) String() string {
 func (*ProcessPaymentResponse) ProtoMessage() {}
 
 func (x *ProcessPaymentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[7]
+	mi := &file_order_pipeline_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -590,7 +766,7 @@ func (x *ProcessPaymentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessPaymentResponse.ProtoReflect.Descriptor instead.
 func (*ProcessPaymentResponse) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{7}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ProcessPaymentResponse) GetPaymentId() string {
@@ -621,7 +797,7 @@ type PaymentMethod struct {
 
 func (x *PaymentMethod) Reset() {
 	*x = PaymentMethod{}
-	mi := &file_order_pipeline_proto_msgTypes[8]
+	mi := &file_order_pipeline_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -633,7 +809,7 @@ func (x *PaymentMethod) String() string {
 func (*PaymentMethod) ProtoMessage() {}
 
 func (x *PaymentMethod) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[8]
+	mi := &file_order_pipeline_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -646,7 +822,7 @@ func (x *PaymentMethod) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PaymentMethod.ProtoReflect.Descriptor instead.
 func (*PaymentMethod) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{8}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PaymentMethod) GetMethod() isPaymentMethod_Method {
@@ -718,7 +894,7 @@ type CreditCard struct {
 
 func (x *CreditCard) Reset() {
 	*x = CreditCard{}
-	mi := &file_order_pipeline_proto_msgTypes[9]
+	mi := &file_order_pipeline_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +906,7 @@ func (x *CreditCard) String() string {
 func (*CreditCard) ProtoMessage() {}
 
 func (x *CreditCard) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[9]
+	mi := &file_order_pipeline_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +919,7 @@ func (x *CreditCard) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreditCard.ProtoReflect.Descriptor instead.
 func (*CreditCard) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{9}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreditCard) GetCardNumber() string {
@@ -792,7 +968,7 @@ type BankTransfer struct {
 
 func (x *BankTransfer) Reset() {
 	*x = BankTransfer{}
-	mi := &file_order_pipeline_proto_msgTypes[10]
+	mi := &file_order_pipeline_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -804,7 +980,7 @@ func (x *BankTransfer) String() string {
 func (*BankTransfer) ProtoMessage() {}
 
 func (x *BankTransfer) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[10]
+	mi := &file_order_pipeline_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -817,7 +993,7 @@ func (x *BankTransfer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BankTransfer.ProtoReflect.Descriptor instead.
 func (*BankTransfer) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{10}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *BankTransfer) GetAccountNumber() string {
@@ -851,7 +1027,7 @@ type DigitalWallet struct {
 
 func (x *DigitalWallet) Reset() {
 	*x = DigitalWallet{}
-	mi := &file_order_pipeline_proto_msgTypes[11]
+	mi := &file_order_pipeline_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -863,7 +1039,7 @@ func (x *DigitalWallet) String() string {
 func (*DigitalWallet) ProtoMessage() {}
 
 func (x *DigitalWallet) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[11]
+	mi := &file_order_pipeline_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -876,7 +1052,7 @@ func (x *DigitalWallet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DigitalWallet.ProtoReflect.Descriptor instead.
 func (*DigitalWallet) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{11}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DigitalWallet) GetWalletId() string {
@@ -905,7 +1081,7 @@ type CreateShipmentRequest struct {
 
 func (x *CreateShipmentRequest) Reset() {
 	*x = CreateShipmentRequest{}
-	mi := &file_order_pipeline_proto_msgTypes[12]
+	mi := &file_order_pipeline_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -917,7 +1093,7 @@ func (x *CreateShipmentRequest) String() string {
 func (*CreateShipmentRequest) ProtoMessage() {}
 
 func (x *CreateShipmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[12]
+	mi := &file_order_pipeline_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -930,7 +1106,7 @@ func (x *CreateShipmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateShipmentRequest.ProtoReflect.Descriptor instead.
 func (*CreateShipmentRequest) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{12}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CreateShipmentRequest) GetOrderId() string {
@@ -965,7 +1141,7 @@ type CreateShipmentResponse struct {
 
 func (x *CreateShipmentResponse) Reset() {
 	*x = CreateShipmentResponse{}
-	mi := &file_order_pipeline_proto_msgTypes[13]
+	mi := &file_order_pipeline_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1153,7 @@ func (x *CreateShipmentResponse) String() string {
 func (*CreateShipmentResponse) ProtoMessage() {}
 
 func (x *CreateShipmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[13]
+	mi := &file_order_pipeline_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1166,7 @@ func (x *CreateShipmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateShipmentResponse.ProtoReflect.Descriptor instead.
 func (*CreateShipmentResponse) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{13}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CreateShipmentResponse) GetShipmentId() string {
@@ -1029,7 +1205,7 @@ type ShippingAddress struct {
 
 func (x *ShippingAddress) Reset() {
 	*x = ShippingAddress{}
-	mi := &file_order_pipeline_proto_msgTypes[14]
+	mi := &file_order_pipeline_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1041,7 +1217,7 @@ func (x *ShippingAddress) String() string {
 func (*ShippingAddress) ProtoMessage() {}
 
 func (x *ShippingAddress) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[14]
+	mi := &file_order_pipeline_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1054,7 +1230,7 @@ func (x *ShippingAddress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShippingAddress.ProtoReflect.Descriptor instead.
 func (*ShippingAddress) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{14}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ShippingAddress) GetStreet() string {
@@ -1118,7 +1294,7 @@ type ShippingMethod struct {
 
 func (x *ShippingMethod) Reset() {
 	*x = ShippingMethod{}
-	mi := &file_order_pipeline_proto_msgTypes[15]
+	mi := &file_order_pipeline_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1130,7 +1306,7 @@ func (x *ShippingMethod) String() string {
 func (*ShippingMethod) ProtoMessage() {}
 
 func (x *ShippingMethod) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[15]
+	mi := &file_order_pipeline_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1143,7 +1319,7 @@ func (x *ShippingMethod) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShippingMethod.ProtoReflect.Descriptor instead.
 func (*ShippingMethod) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{15}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ShippingMethod) GetCarrier() string {
@@ -1183,7 +1359,7 @@ type TrackShipmentRequest struct {
 
 func (x *TrackShipmentRequest) Reset() {
 	*x = TrackShipmentRequest{}
-	mi := &file_order_pipeline_proto_msgTypes[16]
+	mi := &file_order_pipeline_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1195,7 +1371,7 @@ func (x *TrackShipmentRequest) String() string {
 func (*TrackShipmentRequest) ProtoMessage() {}
 
 func (x *TrackShipmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[16]
+	mi := &file_order_pipeline_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1208,7 +1384,7 @@ func (x *TrackShipmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackShipmentRequest.ProtoReflect.Descriptor instead.
 func (*TrackShipmentRequest) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{16}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TrackShipmentRequest) GetShipmentId() string {
@@ -1231,7 +1407,7 @@ type TrackShipmentResponse struct {
 
 func (x *TrackShipmentResponse) Reset() {
 	*x = TrackShipmentResponse{}
-	mi := &file_order_pipeline_proto_msgTypes[17]
+	mi := &file_order_pipeline_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1243,7 +1419,7 @@ func (x *TrackShipmentResponse) String() string {
 func (*TrackShipmentResponse) ProtoMessage() {}
 
 func (x *TrackShipmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[17]
+	mi := &file_order_pipeline_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1256,7 +1432,7 @@ func (x *TrackShipmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrackShipmentResponse.ProtoReflect.Descriptor instead.
 func (*TrackShipmentResponse) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{17}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TrackShipmentResponse) GetShipmentId() string {
@@ -1306,7 +1482,7 @@ type ShipmentEvent struct {
 
 func (x *ShipmentEvent) Reset() {
 	*x = ShipmentEvent{}
-	mi := &file_order_pipeline_proto_msgTypes[18]
+	mi := &file_order_pipeline_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1494,7 @@ func (x *ShipmentEvent) String() string {
 func (*ShipmentEvent) ProtoMessage() {}
 
 func (x *ShipmentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[18]
+	mi := &file_order_pipeline_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1507,7 @@ func (x *ShipmentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShipmentEvent.ProtoReflect.Descriptor instead.
 func (*ShipmentEvent) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{18}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ShipmentEvent) GetTimestamp() string {
@@ -1373,7 +1549,7 @@ type UpdateOrderStatusRequest struct {
 
 func (x *UpdateOrderStatusRequest) Reset() {
 	*x = UpdateOrderStatusRequest{}
-	mi := &file_order_pipeline_proto_msgTypes[19]
+	mi := &file_order_pipeline_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1385,7 +1561,7 @@ func (x *UpdateOrderStatusRequest) String() string {
 func (*UpdateOrderStatusRequest) ProtoMessage() {}
 
 func (x *UpdateOrderStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[19]
+	mi := &file_order_pipeline_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1398,7 +1574,7 @@ func (x *UpdateOrderStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOrderStatusRequest.ProtoReflect.Descriptor instead.
 func (*UpdateOrderStatusRequest) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{19}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *UpdateOrderStatusRequest) GetOrderId() string {
@@ -1425,7 +1601,7 @@ type UpdateOrderStatusResponse struct {
 
 func (x *UpdateOrderStatusResponse) Reset() {
 	*x = UpdateOrderStatusResponse{}
-	mi := &file_order_pipeline_proto_msgTypes[20]
+	mi := &file_order_pipeline_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1437,7 +1613,7 @@ func (x *UpdateOrderStatusResponse) String() string {
 func (*UpdateOrderStatusResponse) ProtoMessage() {}
 
 func (x *UpdateOrderStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_order_pipeline_proto_msgTypes[20]
+	mi := &file_order_pipeline_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1450,7 +1626,7 @@ func (x *UpdateOrderStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateOrderStatusResponse.ProtoReflect.Descriptor instead.
 func (*UpdateOrderStatusResponse) Descriptor() ([]byte, []int) {
-	return file_order_pipeline_proto_rawDescGZIP(), []int{20}
+	return file_order_pipeline_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *UpdateOrderStatusResponse) GetSuccess() bool {
@@ -1490,9 +1666,25 @@ const file_order_pipeline_proto_rawDesc = "" +
 	"\x13CreateOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\",\n" +
 	"\x0fGetOrderRequest\x12\x19\n" +
-	"\border_id\x18\x01 \x01(\tR\aorderId\":\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\"\xb3\x01\n" +
 	"\x10GetOrderResponse\x12&\n" +
-	"\x05order\x18\x01 \x01(\v2\x10.order.sv1.OrderR\x05order\"\x8b\x01\n" +
+	"\x05order\x18\x01 \x01(\v2\x10.order.sv1.OrderR\x05order\x129\n" +
+	"\fpayment_info\x18\x02 \x01(\v2\x16.order.sv1.PaymentInfoR\vpaymentInfo\x12<\n" +
+	"\rshipment_info\x18\x03 \x01(\v2\x17.order.sv1.ShipmentInfoR\fshipmentInfo\"\x9d\x01\n" +
+	"\vPaymentInfo\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\x120\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x18.order.sv1.PaymentStatusR\x06status\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x01R\x06amount\x12%\n" +
+	"\x0epayment_method\x18\x04 \x01(\tR\rpaymentMethod\"\xff\x01\n" +
+	"\fShipmentInfo\x12\x1f\n" +
+	"\vshipment_id\x18\x01 \x01(\tR\n" +
+	"shipmentId\x12'\n" +
+	"\x0ftracking_number\x18\x02 \x01(\tR\x0etrackingNumber\x12\x18\n" +
+	"\acarrier\x18\x03 \x01(\tR\acarrier\x121\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x19.order.sv1.ShipmentStatusR\x06status\x12)\n" +
+	"\x10current_location\x18\x05 \x01(\tR\x0fcurrentLocation\x12-\n" +
+	"\x12estimated_delivery\x18\x06 \x01(\tR\x11estimatedDelivery\"\x8b\x01\n" +
 	"\x15ProcessPaymentRequest\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\x12?\n" +
 	"\x0epayment_method\x18\x02 \x01(\v2\x18.order.sv1.PaymentMethodR\rpaymentMethod\x12\x16\n" +
@@ -1566,13 +1758,16 @@ const file_order_pipeline_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\x0e2\x16.order.sv1.OrderStatusR\x06status\"O\n" +
 	"\x19UpdateOrderStatusResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*O\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*n\n" +
 	"\vOrderStatus\x12\v\n" +
-	"\aPENDING\x10\x00\x12\b\n" +
-	"\x04PAID\x10\x01\x12\v\n" +
+	"\aPENDING\x10\x00\x12\x0e\n" +
+	"\n" +
+	"PROCESSING\x10\x01\x12\v\n" +
 	"\aSHIPPED\x10\x02\x12\r\n" +
-	"\tCOMPLETED\x10\x03\x12\r\n" +
-	"\tCANCELLED\x10\x04*}\n" +
+	"\tDELIVERED\x10\x03\x12\r\n" +
+	"\tCANCELLED\x10\x04\x12\b\n" +
+	"\x04PAID\x10\x05\x12\r\n" +
+	"\tCOMPLETED\x10\x06*}\n" +
 	"\rPaymentStatus\x12\x13\n" +
 	"\x0fPAYMENT_PENDING\x10\x00\x12\x16\n" +
 	"\x12PAYMENT_PROCESSING\x10\x01\x12\x15\n" +
@@ -1609,7 +1804,7 @@ func file_order_pipeline_proto_rawDescGZIP() []byte {
 }
 
 var file_order_pipeline_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_order_pipeline_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_order_pipeline_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_order_pipeline_proto_goTypes = []any{
 	(OrderStatus)(0),                  // 0: order.sv1.OrderStatus
 	(PaymentStatus)(0),                // 1: order.sv1.PaymentStatus
@@ -1620,55 +1815,61 @@ var file_order_pipeline_proto_goTypes = []any{
 	(*CreateOrderResponse)(nil),       // 6: order.sv1.CreateOrderResponse
 	(*GetOrderRequest)(nil),           // 7: order.sv1.GetOrderRequest
 	(*GetOrderResponse)(nil),          // 8: order.sv1.GetOrderResponse
-	(*ProcessPaymentRequest)(nil),     // 9: order.sv1.ProcessPaymentRequest
-	(*ProcessPaymentResponse)(nil),    // 10: order.sv1.ProcessPaymentResponse
-	(*PaymentMethod)(nil),             // 11: order.sv1.PaymentMethod
-	(*CreditCard)(nil),                // 12: order.sv1.CreditCard
-	(*BankTransfer)(nil),              // 13: order.sv1.BankTransfer
-	(*DigitalWallet)(nil),             // 14: order.sv1.DigitalWallet
-	(*CreateShipmentRequest)(nil),     // 15: order.sv1.CreateShipmentRequest
-	(*CreateShipmentResponse)(nil),    // 16: order.sv1.CreateShipmentResponse
-	(*ShippingAddress)(nil),           // 17: order.sv1.ShippingAddress
-	(*ShippingMethod)(nil),            // 18: order.sv1.ShippingMethod
-	(*TrackShipmentRequest)(nil),      // 19: order.sv1.TrackShipmentRequest
-	(*TrackShipmentResponse)(nil),     // 20: order.sv1.TrackShipmentResponse
-	(*ShipmentEvent)(nil),             // 21: order.sv1.ShipmentEvent
-	(*UpdateOrderStatusRequest)(nil),  // 22: order.sv1.UpdateOrderStatusRequest
-	(*UpdateOrderStatusResponse)(nil), // 23: order.sv1.UpdateOrderStatusResponse
+	(*PaymentInfo)(nil),               // 9: order.sv1.PaymentInfo
+	(*ShipmentInfo)(nil),              // 10: order.sv1.ShipmentInfo
+	(*ProcessPaymentRequest)(nil),     // 11: order.sv1.ProcessPaymentRequest
+	(*ProcessPaymentResponse)(nil),    // 12: order.sv1.ProcessPaymentResponse
+	(*PaymentMethod)(nil),             // 13: order.sv1.PaymentMethod
+	(*CreditCard)(nil),                // 14: order.sv1.CreditCard
+	(*BankTransfer)(nil),              // 15: order.sv1.BankTransfer
+	(*DigitalWallet)(nil),             // 16: order.sv1.DigitalWallet
+	(*CreateShipmentRequest)(nil),     // 17: order.sv1.CreateShipmentRequest
+	(*CreateShipmentResponse)(nil),    // 18: order.sv1.CreateShipmentResponse
+	(*ShippingAddress)(nil),           // 19: order.sv1.ShippingAddress
+	(*ShippingMethod)(nil),            // 20: order.sv1.ShippingMethod
+	(*TrackShipmentRequest)(nil),      // 21: order.sv1.TrackShipmentRequest
+	(*TrackShipmentResponse)(nil),     // 22: order.sv1.TrackShipmentResponse
+	(*ShipmentEvent)(nil),             // 23: order.sv1.ShipmentEvent
+	(*UpdateOrderStatusRequest)(nil),  // 24: order.sv1.UpdateOrderStatusRequest
+	(*UpdateOrderStatusResponse)(nil), // 25: order.sv1.UpdateOrderStatusResponse
 }
 var file_order_pipeline_proto_depIdxs = []int32{
 	4,  // 0: order.sv1.Order.items:type_name -> order.sv1.OrderItems
 	0,  // 1: order.sv1.Order.status:type_name -> order.sv1.OrderStatus
 	4,  // 2: order.sv1.CreateOrderRequest.items:type_name -> order.sv1.OrderItems
 	3,  // 3: order.sv1.GetOrderResponse.order:type_name -> order.sv1.Order
-	11, // 4: order.sv1.ProcessPaymentRequest.payment_method:type_name -> order.sv1.PaymentMethod
-	1,  // 5: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
-	12, // 6: order.sv1.PaymentMethod.credit_card:type_name -> order.sv1.CreditCard
-	13, // 7: order.sv1.PaymentMethod.bank_transfer:type_name -> order.sv1.BankTransfer
-	14, // 8: order.sv1.PaymentMethod.digital_wallet:type_name -> order.sv1.DigitalWallet
-	17, // 9: order.sv1.CreateShipmentRequest.shipping_address:type_name -> order.sv1.ShippingAddress
-	18, // 10: order.sv1.CreateShipmentRequest.shipping_method:type_name -> order.sv1.ShippingMethod
-	2,  // 11: order.sv1.TrackShipmentResponse.status:type_name -> order.sv1.ShipmentStatus
-	21, // 12: order.sv1.TrackShipmentResponse.events:type_name -> order.sv1.ShipmentEvent
-	2,  // 13: order.sv1.ShipmentEvent.status:type_name -> order.sv1.ShipmentStatus
-	0,  // 14: order.sv1.UpdateOrderStatusRequest.status:type_name -> order.sv1.OrderStatus
-	5,  // 15: order.sv1.OrderService.CreateOrder:input_type -> order.sv1.CreateOrderRequest
-	7,  // 16: order.sv1.OrderService.GetOrder:input_type -> order.sv1.GetOrderRequest
-	22, // 17: order.sv1.OrderService.UpdateOrderStatus:input_type -> order.sv1.UpdateOrderStatusRequest
-	9,  // 18: order.sv1.PaymentService.ProcessPayment:input_type -> order.sv1.ProcessPaymentRequest
-	15, // 19: order.sv1.ShippingService.CreateShipment:input_type -> order.sv1.CreateShipmentRequest
-	19, // 20: order.sv1.ShippingService.TrackShipment:input_type -> order.sv1.TrackShipmentRequest
-	6,  // 21: order.sv1.OrderService.CreateOrder:output_type -> order.sv1.CreateOrderResponse
-	8,  // 22: order.sv1.OrderService.GetOrder:output_type -> order.sv1.GetOrderResponse
-	23, // 23: order.sv1.OrderService.UpdateOrderStatus:output_type -> order.sv1.UpdateOrderStatusResponse
-	10, // 24: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
-	16, // 25: order.sv1.ShippingService.CreateShipment:output_type -> order.sv1.CreateShipmentResponse
-	20, // 26: order.sv1.ShippingService.TrackShipment:output_type -> order.sv1.TrackShipmentResponse
-	21, // [21:27] is the sub-list for method output_type
-	15, // [15:21] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	9,  // 4: order.sv1.GetOrderResponse.payment_info:type_name -> order.sv1.PaymentInfo
+	10, // 5: order.sv1.GetOrderResponse.shipment_info:type_name -> order.sv1.ShipmentInfo
+	1,  // 6: order.sv1.PaymentInfo.status:type_name -> order.sv1.PaymentStatus
+	2,  // 7: order.sv1.ShipmentInfo.status:type_name -> order.sv1.ShipmentStatus
+	13, // 8: order.sv1.ProcessPaymentRequest.payment_method:type_name -> order.sv1.PaymentMethod
+	1,  // 9: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
+	14, // 10: order.sv1.PaymentMethod.credit_card:type_name -> order.sv1.CreditCard
+	15, // 11: order.sv1.PaymentMethod.bank_transfer:type_name -> order.sv1.BankTransfer
+	16, // 12: order.sv1.PaymentMethod.digital_wallet:type_name -> order.sv1.DigitalWallet
+	19, // 13: order.sv1.CreateShipmentRequest.shipping_address:type_name -> order.sv1.ShippingAddress
+	20, // 14: order.sv1.CreateShipmentRequest.shipping_method:type_name -> order.sv1.ShippingMethod
+	2,  // 15: order.sv1.TrackShipmentResponse.status:type_name -> order.sv1.ShipmentStatus
+	23, // 16: order.sv1.TrackShipmentResponse.events:type_name -> order.sv1.ShipmentEvent
+	2,  // 17: order.sv1.ShipmentEvent.status:type_name -> order.sv1.ShipmentStatus
+	0,  // 18: order.sv1.UpdateOrderStatusRequest.status:type_name -> order.sv1.OrderStatus
+	5,  // 19: order.sv1.OrderService.CreateOrder:input_type -> order.sv1.CreateOrderRequest
+	7,  // 20: order.sv1.OrderService.GetOrder:input_type -> order.sv1.GetOrderRequest
+	24, // 21: order.sv1.OrderService.UpdateOrderStatus:input_type -> order.sv1.UpdateOrderStatusRequest
+	11, // 22: order.sv1.PaymentService.ProcessPayment:input_type -> order.sv1.ProcessPaymentRequest
+	17, // 23: order.sv1.ShippingService.CreateShipment:input_type -> order.sv1.CreateShipmentRequest
+	21, // 24: order.sv1.ShippingService.TrackShipment:input_type -> order.sv1.TrackShipmentRequest
+	6,  // 25: order.sv1.OrderService.CreateOrder:output_type -> order.sv1.CreateOrderResponse
+	8,  // 26: order.sv1.OrderService.GetOrder:output_type -> order.sv1.GetOrderResponse
+	25, // 27: order.sv1.OrderService.UpdateOrderStatus:output_type -> order.sv1.UpdateOrderStatusResponse
+	12, // 28: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
+	18, // 29: order.sv1.ShippingService.CreateShipment:output_type -> order.sv1.CreateShipmentResponse
+	22, // 30: order.sv1.ShippingService.TrackShipment:output_type -> order.sv1.TrackShipmentResponse
+	25, // [25:31] is the sub-list for method output_type
+	19, // [19:25] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_order_pipeline_proto_init() }
@@ -1676,7 +1877,7 @@ func file_order_pipeline_proto_init() {
 	if File_order_pipeline_proto != nil {
 		return
 	}
-	file_order_pipeline_proto_msgTypes[8].OneofWrappers = []any{
+	file_order_pipeline_proto_msgTypes[10].OneofWrappers = []any{
 		(*PaymentMethod_CreditCard)(nil),
 		(*PaymentMethod_BankTransfer)(nil),
 		(*PaymentMethod_DigitalWallet)(nil),
@@ -1687,7 +1888,7 @@ func file_order_pipeline_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_order_pipeline_proto_rawDesc), len(file_order_pipeline_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   21,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

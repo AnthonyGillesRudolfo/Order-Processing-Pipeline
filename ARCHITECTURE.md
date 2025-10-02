@@ -4,7 +4,32 @@
 
 ## Overview
 
-This application demonstrates a complete order processing pipeline built with Restate using **Workflows** and **Virtual Objects** in Go.
+This application demonstrates a complete order processing pipeline built with Restate using **Workflows** and **Virtual Objects** in Go, with **PostgreSQL integration** for persistent storage.
+
+## Storage Architecture
+
+### Dual Storage Strategy
+
+The application uses a **dual storage approach** combining Restate's built-in state management with PostgreSQL:
+
+1. **Restate State** (Fast, In-Memory)
+   - Workflow and Virtual Object state
+   - Fast access during execution
+   - Automatically managed by Restate
+   - Survives restarts through Restate's journal
+
+2. **PostgreSQL Database** (Persistent, Queryable)
+   - Long-term storage for orders, payments, shipments
+   - Complex queries and reporting
+   - Audit trail and compliance
+   - Standard SQL access
+
+### Database Operations
+
+All database writes are wrapped in `restate.Run()` blocks to ensure:
+- **Durability**: Operations are journaled by Restate
+- **Exactly-once execution**: No duplicate writes on retries
+- **Automatic recovery**: Failed operations are retried
 
 ## Service Architecture
 
@@ -22,11 +47,15 @@ The OrderService is implemented as a **Restate Workflow**, which provides:
 - `UpdateOrderStatus` (WorkflowContext) - Updates order status in workflow state
 
 #### Workflow Steps:
-1. Store order details in workflow state
-2. Calculate total amount from items
-3. Call Payment Virtual Object to process payment
-4. Call Shipping Virtual Object to create shipment
-5. Mark order as completed
+1. Calculate total amount from items
+2. Store order details in workflow state
+3. **Persist order to PostgreSQL database** (durable execution)
+4. Call Payment Virtual Object to process payment
+5. **Update order with payment info in database** (durable execution)
+6. Call Shipping Virtual Object to create shipment
+7. **Update order with shipment info in database** (durable execution)
+8. Mark order as completed
+9. **Update final status in database** (durable execution)
 
 #### State Stored:
 - `customer_id`: Customer identifier
@@ -54,8 +83,10 @@ The PaymentService is implemented as a **Restate Virtual Object**, which provide
 
 #### Features:
 - Checks if payment already processed (idempotency)
+- **Creates payment record in PostgreSQL** (durable execution)
 - Durable execution for payment transaction
-- Stores payment state for audit trail
+- **Updates payment status in database** (durable execution)
+- Stores payment state in Restate for fast access
 
 ### 3. **ShippingService - VIRTUAL OBJECT**
 
@@ -79,8 +110,10 @@ The ShippingService is implemented as a **Restate Virtual Object**, which provid
 #### Features:
 - Checks if shipment already exists (idempotency)
 - Generates unique tracking number
-- Durable execution for shipment creation
+- Durable execution for shipment creation with external provider
+- **Persists shipment to PostgreSQL database** (durable execution)
 - Read-only tracking endpoint
+- Stores shipment state in Restate for fast access
 
 ## Key Restate Concepts Used
 
@@ -131,24 +164,46 @@ Client
 
 ## Running the Application
 
-### 1. Build
+### 1. Set Up PostgreSQL Database
+
+See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed instructions.
+
+**Quick setup:**
+```bash
+# Create database and user
+psql -U postgres -f setup_database.sql
+```
+
+**Database Configuration:**
+- Host: localhost
+- Port: 5432
+- Database: orderpipeline
+- User: orderpipelineadmin
+- Password: (empty)
+
+### 2. Build
 ```bash
 go build -o order-processing-pipeline .
 ```
 
-### 2. Start the Server
+### 3. Start the Server
 ```bash
 ./order-processing-pipeline
 ```
 
-The server will start on port 9080.
+The server will start on port 9081 and automatically:
+- Connect to PostgreSQL
+- Create database tables if they don't exist
+- Start the Restate server
 
-### 3. Register with Restate
+**Note:** The application will continue running even if database connection fails, but without persistent storage.
+
+### 4. Register with Restate
 ```bash
-restate deployments register http://localhost:9080
+restate deployments register http://localhost:9081
 ```
 
-### 4. Invoke the Workflow
+### 5. Invoke the Workflow
 ```bash
 # Create an order (workflow ID = order-123)
 restate workflow start order.sv1.OrderService/order-123 CreateOrder \
@@ -163,23 +218,61 @@ restate object call order.sv1.ShippingService/shipment-789 TrackShipment \
   --input '{"shipment_id": "shipment-789"}'
 ```
 
+### 6. Query the Database
+
+```sql
+-- Connect to database
+psql -U orderpipelineadmin -d orderpipeline
+
+-- View all orders
+SELECT * FROM orders ORDER BY created_at DESC;
+
+-- View orders with payment and shipment info
+SELECT
+    o.id,
+    o.customer_id,
+    o.status,
+    o.total_amount,
+    p.payment_method,
+    s.tracking_number,
+    s.carrier
+FROM orders o
+LEFT JOIN payments p ON o.payment_id = p.id
+LEFT JOIN shipments s ON o.shipment_id = s.id
+ORDER BY o.created_at DESC;
+```
+
 ## Benefits of This Architecture
 
 1. **Reliability**: Workflows ensure exactly-once execution even with failures
 2. **Consistency**: Virtual Objects provide single-writer consistency per key
 3. **Observability**: All state changes are tracked in Restate's journal
 4. **Scalability**: Virtual Objects can be distributed across multiple instances
-5. **Simplicity**: No need for external databases or message queues
-6. **Idempotency**: Built-in idempotency for all operations
-7. **Durability**: State persists across restarts and failures
+5. **Persistent Storage**: PostgreSQL provides long-term data persistence
+6. **Complex Queries**: SQL enables advanced reporting and analytics
+7. **Idempotency**: Built-in idempotency for all operations
+8. **Durability**: State persists across restarts and failures (both Restate and PostgreSQL)
+9. **Audit Trail**: Complete history of all transactions in the database
+10. **Graceful Degradation**: Application continues running even if database is unavailable
+
+## Files
+
+- **main.go** - Main application with workflow and virtual object handlers
+- **database.go** - Database connection, schema, and query functions
+- **setup_database.sql** - SQL script to create database and user
+- **DATABASE_SETUP.md** - Comprehensive database setup guide
+- **ARCHITECTURE.md** - This file, architecture documentation
 
 ## Next Steps
 
 - Implement actual payment gateway integration in `ProcessPayment`
 - Implement actual shipping provider API in `CreateShipment`
-- Add database persistence for order history
 - Add more workflow handlers (CancelOrder, RefundOrder)
 - Add more virtual object handlers (UpdateShipmentLocation, AddShipmentEvent)
 - Add comprehensive error handling and validation
 - Add unit tests using Restate's testing utilities
+- Set up database backups and monitoring
+- Implement database migrations for schema changes
+- Add database connection pooling configuration
+- Consider read replicas for scaling queries
 
