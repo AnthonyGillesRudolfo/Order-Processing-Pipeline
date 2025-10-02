@@ -18,11 +18,13 @@ message OrderItems{
 }
 
 enum OrderStatus {
-    PENDING = 0;
-    PAID = 1;
-    SHIPPED = 2;
-    COMPLETED = 3;
-    CANCELLED = 4;
+    PENDING = 0;           // Order created, payment not yet completed
+    PROCESSING = 1;        // Payment completed, shipment not yet created
+    SHIPPED = 2;           // Shipment created and in transit
+    DELIVERED = 3;         // Shipment delivered to customer
+    CANCELLED = 4;         // Order cancelled (payment failed or other issues)
+    PAID = 5;              // Deprecated: use PROCESSING instead
+    COMPLETED = 6;         // Deprecated: use DELIVERED instead
 }
 
 message CreateOrderRequest{
@@ -40,6 +42,26 @@ message GetOrderRequest {
 
 message GetOrderResponse {
     Order order = 1;
+    PaymentInfo payment_info = 2;
+    ShipmentInfo shipment_info = 3;
+}
+
+// Comprehensive payment information for order tracking
+message PaymentInfo {
+    string payment_id = 1;
+    PaymentStatus status = 2;
+    double amount = 3;
+    string payment_method = 4;
+}
+
+// Comprehensive shipment information for order tracking
+message ShipmentInfo {
+    string shipment_id = 1;
+    string tracking_number = 2;
+    string carrier = 3;
+    ShipmentStatus status = 4;
+    string current_location = 5;
+    string estimated_delivery = 6;
 }
 
 // Payment
