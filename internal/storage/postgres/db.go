@@ -7,6 +7,7 @@ import (
 	"time"
 
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
+	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
 	_ "github.com/lib/pq"
 )
 
@@ -231,4 +232,40 @@ func UpdateShipmentStatus(shipmentID string, status orderpb.ShipmentStatus, curr
 	}
 	log.Printf("[DB] Updated shipment status: %s -> %s", shipmentID, status.String())
 	return nil
+}
+
+// Merchant ops
+func GetMerchantItems(merchantID string) ([]*merchantpb.Item, error) {
+	if DB == nil {
+		return []*merchantpb.Item{}, fmt.Errorf("database not initialized")
+	}
+
+	query := `
+		SELECT item_id, name, quantity, price
+		FROM merchant_items
+		WHERE merchant_id = $1
+		ORDER BY item_id
+	`
+	rows, err := DB.Query(query, merchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query merchant items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*merchantpb.Item
+	for rows.Next() {
+		var item merchantpb.Item
+		err := rows.Scan(&item.ItemId, &item.Name, &item.Quantity, &item.Price)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan merchant item: %w", err)
+		}
+		items = append(items, &item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating merchant items: %w", err)
+	}
+
+	log.Printf("[DB] Retrieved %d items for merchant: %s", len(items), merchantID)
+	return items, nil
 }

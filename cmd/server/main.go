@@ -137,6 +137,7 @@ type checkoutItem struct {
 type checkoutRequest struct {
 	CustomerID string         `json:"customer_id"`
 	Items      []checkoutItem `json:"items"`
+	MerchantID string         `json:"merchant_id"`
 }
 
 func startWebUIAndAPI() error {
@@ -155,6 +156,7 @@ func startWebUIAndAPI() error {
 	// API
 	mux.HandleFunc("/api/checkout", handleCheckout)
 	mux.HandleFunc("/api/orders/", handleGetOrderStatus)
+	mux.HandleFunc("/api/merchants/", handleGetMerchantItems)
 
 	log.Println("Web UI available on :3000 (serving ./web)")
 	return http.ListenAndServe(":3000", withCORS(mux))
@@ -184,8 +186,8 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	if req.CustomerID == "" || len(req.Items) == 0 {
-		http.Error(w, "customer_id and items are required", http.StatusBadRequest)
+	if req.CustomerID == "" || len(req.Items) == 0 || req.MerchantID == "" {
+		http.Error(w, "customer_id, items, and merchant_id are required", http.StatusBadRequest)
 		return
 	}
 
@@ -194,6 +196,7 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 	in := map[string]any{
 		"customer_id": req.CustomerID,
 		"items":       req.Items,
+		"merchant_id": req.MerchantID,
 	}
 	inBytes, _ := json.Marshal(in)
 
@@ -275,4 +278,60 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 			"updated_at":      updatedAt,
 		},
 	}, nil
+}
+
+func handleGetMerchantItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// /api/merchants/{merchant_id}/items
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/merchants/"), "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] != "items" {
+		http.Error(w, "merchant id required, expected format: /api/merchants/{merchant_id}/items", http.StatusBadRequest)
+		return
+	}
+	merchantID := parts[0]
+
+	// Call Restate runtime HTTP endpoint directly
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/ListItems", runtimeURL, merchantID)
+
+	// Create request body for ListItems
+	reqBody := map[string]any{
+		"merchant_id": merchantID,
+		"page_size":   100, // Get all items for now
+		"page_token":  "",
+	}
+	reqBytes, _ := json.Marshal(reqBody)
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to fetch merchant items", "detail": detail})
+		return
+	}
+
+	var response map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to decode response", "detail": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
 }

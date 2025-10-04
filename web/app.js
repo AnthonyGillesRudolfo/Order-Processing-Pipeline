@@ -1,8 +1,5 @@
-const PRODUCTS = [
-    { id: 'prod-1', name: 'Widget', price: 10 },
-    { id: 'prod-2', name: 'Gadget', price: 15 },
-    { id: 'prod-3', name: 'Doohickey', price: 7.5 },
-  ];
+let PRODUCTS = []; // Will be loaded dynamically
+let currentMerchantId = 'm_001'; // Default merchant
   
   const basket = new Map(); // productId -> quantity
   
@@ -13,6 +10,8 @@ const PRODUCTS = [
   const basketBodyEl = $('#basket-body');
   const checkoutBtn = $('#checkout-btn');
   const customerInput = $('#customer-id');
+  const merchantSelect = $('#merchant-select');
+  const refreshProductsBtn = $('#refresh-products');
   
   const orderSection = $('#order-section');
   const orderIdEl = $('#order-id');
@@ -43,9 +42,12 @@ const PRODUCTS = [
       card.innerHTML = `
         <div class="title">${p.name}</div>
         <div class="price">$${p.price.toFixed(2)}</div>
-        <button>Add to basket</button>
+        <div class="stock">Stock: ${p.quantity}</div>
+        <button ${p.quantity <= 0 ? 'disabled' : ''}>Add to basket</button>
       `;
-      card.querySelector('button').onclick = () => addToBasket(p.id);
+      if (p.quantity > 0) {
+        card.querySelector('button').onclick = () => addToBasket(p.item_id);
+      }
       productsEl.appendChild(card);
     });
   }
@@ -64,7 +66,8 @@ const PRODUCTS = [
   
     basketBodyEl.innerHTML = '';
     items.forEach(([pid, qty]) => {
-      const p = PRODUCTS.find(pp => pp.id === pid);
+      const p = PRODUCTS.find(pp => pp.item_id === pid);
+      if (!p) return; // Skip if product not found
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${p.name}</td>
@@ -101,6 +104,7 @@ const PRODUCTS = [
   async function checkout() {
     const customer_id = customerInput.value.trim() || 'customer-001';
     const items = Array.from(basket.entries()).map(([product_id, quantity]) => ({ product_id, quantity }));
+    const merchant_id = currentMerchantId;
   
     
     showModal('Order invoked', 'Sending request to Restate runtime...');
@@ -110,7 +114,7 @@ const PRODUCTS = [
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id, items }),
+        body: JSON.stringify({ customer_id, items, merchant_id }),
       });
   
       if (!res.ok) {
@@ -163,7 +167,38 @@ const PRODUCTS = [
     update();
   }
   
+  async function loadProducts() {
+    try {
+      const response = await fetch(`/api/merchants/${currentMerchantId}/items`);
+      if (!response.ok) {
+        throw new Error(`Failed to load products: ${response.status}`);
+      }
+      const data = await response.json();
+      PRODUCTS = data.items || [];
+      renderProducts();
+    } catch (error) {
+      console.error('Error loading products:', error);
+      showModal('Error', `Failed to load products: ${error.message}`);
+      // Fallback to empty products
+      PRODUCTS = [];
+      renderProducts();
+    }
+  }
+  
   checkoutBtn.onclick = checkout;
   
-  renderProducts();
+  // Merchant selector event handlers
+  merchantSelect.onchange = () => {
+    currentMerchantId = merchantSelect.value;
+    basket.clear(); // Clear basket when switching merchants
+    loadProducts();
+    renderBasket();
+  };
+  
+  refreshProductsBtn.onclick = () => {
+    loadProducts();
+  };
+  
+  // Load products and initialize
+  loadProducts();
   renderBasket();

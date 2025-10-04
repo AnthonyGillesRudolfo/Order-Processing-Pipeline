@@ -6,6 +6,7 @@ import (
     "strconv"
 
     merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
+    postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
     restate "github.com/restatedev/sdk-go"
 )
 
@@ -23,11 +24,25 @@ func getOrInitItems(ctx restate.ObjectContext) ([]*merchantpb.Item, error) {
 
 // getItemsShared reads items with a shared context (read-only)
 func getItemsShared(ctx restate.ObjectSharedContext) ([]*merchantpb.Item, error) {
+    merchantID := restate.Key(ctx)
+    
+    // Check if already initialized in Restate state
     items, err := restate.Get[[]*merchantpb.Item](ctx, "items")
-    if err != nil {
+    if err == nil && len(items) > 0 {
+        return items, nil
+    }
+    
+    // Try to load from database on first access
+    log.Printf("[Merchant %s] Loading items from database", merchantID)
+    dbItems, dbErr := postgres.GetMerchantItems(merchantID)
+    if dbErr != nil {
+        log.Printf("[Merchant %s] Error loading from database: %v, returning empty", merchantID, dbErr)
         return []*merchantpb.Item{}, nil
     }
-    return items, nil
+    
+    // Return database items (they will be cached in state on next write operation)
+    log.Printf("[Merchant %s] Loaded %d items from database", merchantID, len(dbItems))
+    return dbItems, nil
 }
 
 // GetMerchant is a shared (read-only) handler returning merchant metadata and items
