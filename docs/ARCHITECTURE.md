@@ -115,6 +115,25 @@ The ShippingService is implemented as a **Restate Virtual Object**, which provid
 - Read-only tracking endpoint
 - Stores shipment state in Restate for fast access
 
+### 4. **MerchantService - VIRTUAL OBJECT**
+
+The MerchantService is implemented as a **Restate Virtual Object**, keyed by merchant ID. It manages merchant catalog state (items and stock levels) with read and write handlers.
+
+#### Handlers:
+- `GetMerchant` (ObjectSharedContext) - Read merchant metadata and items
+- `ListItems` (ObjectSharedContext) - Read paginated items
+- `GetItem` (ObjectSharedContext) - Read single item
+- `UpdateStock` (ObjectContext) - Mutate stock via absolute set or delta increment
+
+#### State Stored:
+- `name`: Merchant display name
+- `items`: List of items `{item_id, name, quantity, price}`
+
+#### Features:
+- Pagination with `page_size`, `page_token`, `next_page_token`
+- Flexible stock updates using `oneof { set_quantity, increment_delta }`
+- Default quantity enforcement to 999 when creating unseen items
+
 ## Key Restate Concepts Used
 
 ### Workflows

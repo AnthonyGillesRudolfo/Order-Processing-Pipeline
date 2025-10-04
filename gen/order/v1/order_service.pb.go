@@ -28,6 +28,7 @@ type Order struct {
 	CustomerId    string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
 	Items         []*OrderItems          `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
 	Status        OrderStatus            `protobuf:"varint,4,opt,name=status,proto3,enum=order.sv1.OrderStatus" json:"status,omitempty"` // from common.proto
+	MerchantId    string                 `protobuf:"bytes,5,opt,name=merchant_id,json=merchantId,proto3" json:"merchant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -90,6 +91,13 @@ func (x *Order) GetStatus() OrderStatus {
 	return OrderStatus_PENDING
 }
 
+func (x *Order) GetMerchantId() string {
+	if x != nil {
+		return x.MerchantId
+	}
+	return ""
+}
+
 type OrderItems struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ProductId     string                 `protobuf:"bytes,1,opt,name=product_id,json=productId,proto3" json:"product_id,omitempty"`
@@ -146,6 +154,7 @@ type CreateOrderRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
 	Items         []*OrderItems          `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	MerchantId    string                 `protobuf:"bytes,3,opt,name=merchant_id,json=merchantId,proto3" json:"merchant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -192,6 +201,13 @@ func (x *CreateOrderRequest) GetItems() []*OrderItems {
 		return x.Items
 	}
 	return nil
+}
+
+func (x *CreateOrderRequest) GetMerchantId() string {
+	if x != nil {
+		return x.MerchantId
+	}
+	return ""
 }
 
 type CreateOrderResponse struct {
@@ -602,22 +618,26 @@ var File_order_service_proto protoreflect.FileDescriptor
 
 const file_order_service_proto_rawDesc = "" +
 	"\n" +
-	"\x13order_service.proto\x12\torder.sv1\x1a\fcommon.proto\"\x95\x01\n" +
+	"\x13order_service.proto\x12\torder.sv1\x1a\fcommon.proto\"\xb6\x01\n" +
 	"\x05Order\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
 	"customerId\x12+\n" +
 	"\x05items\x18\x03 \x03(\v2\x15.order.sv1.OrderItemsR\x05items\x12.\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x16.order.sv1.OrderStatusR\x06status\"G\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x16.order.sv1.OrderStatusR\x06status\x12\x1f\n" +
+	"\vmerchant_id\x18\x05 \x01(\tR\n" +
+	"merchantId\"G\n" +
 	"\n" +
 	"OrderItems\x12\x1d\n" +
 	"\n" +
 	"product_id\x18\x01 \x01(\tR\tproductId\x12\x1a\n" +
-	"\bquantity\x18\x02 \x01(\x05R\bquantity\"b\n" +
+	"\bquantity\x18\x02 \x01(\x05R\bquantity\"\x83\x01\n" +
 	"\x12CreateOrderRequest\x12\x1f\n" +
 	"\vcustomer_id\x18\x01 \x01(\tR\n" +
 	"customerId\x12+\n" +
-	"\x05items\x18\x02 \x03(\v2\x15.order.sv1.OrderItemsR\x05items\"0\n" +
+	"\x05items\x18\x02 \x03(\v2\x15.order.sv1.OrderItemsR\x05items\x12\x1f\n" +
+	"\vmerchant_id\x18\x03 \x01(\tR\n" +
+	"merchantId\"0\n" +
 	"\x13CreateOrderResponse\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\",\n" +
 	"\x0fGetOrderRequest\x12\x19\n" +

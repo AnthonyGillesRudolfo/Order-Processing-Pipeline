@@ -18,7 +18,7 @@ import (
 // CreateOrder orchestrates the order process
 func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (*orderpb.CreateOrderResponse, error) {
 	orderId := restate.Key(ctx)
-	log.Printf("[Workflow %s] Creating order for customer: %s", orderId, req.CustomerId)
+    log.Printf("[Workflow %s] Creating order for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
 
 	var totalAmount float64
 	for _, item := range req.Items {
@@ -26,14 +26,16 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 		totalAmount += float64(item.Quantity) * 1
 	}
 
-	restate.Set(ctx, "customer_id", req.CustomerId)
+    restate.Set(ctx, "customer_id", req.CustomerId)
 	restate.Set(ctx, "status", orderpb.OrderStatus_PENDING)
 	restate.Set(ctx, "total_amount", totalAmount)
+    if req.MerchantId != "" { restate.Set(ctx, "merchant_id", req.MerchantId) }
 
-	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		log.Printf("[Workflow %s] Persisting order to database", orderId)
-		return nil, postgres.InsertOrder(orderId, req.CustomerId, orderpb.OrderStatus_PENDING, totalAmount)
-	})
+    _, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+        log.Printf("[Workflow %s] Persisting order and items to database", orderId)
+        if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil { return nil, err }
+        return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
+    })
 	if err != nil {
 		return nil, fmt.Errorf("failed to persist order to database: %w", err)
 	}
