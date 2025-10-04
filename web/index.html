@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Order Pipeline Test UI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="/static/style.css" rel="stylesheet" />
+</head>
+<body>
+  <div class="container">
+    <h1>Order Pipeline Test</h1>
+
+    <section>
+      <h2>Products</h2>
+      <div id="products" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Basket</h2>
+      <div id="basket-empty">Your basket is empty.</div>
+      <table id="basket-table" class="hidden">
+        <thead><tr><th>Product</th><th>Qty</th><th></th></tr></thead>
+        <tbody id="basket-body"></tbody>
+      </table>
+      <div class="basket-actions">
+        <label>Customer ID: <input id="customer-id" placeholder="customer-001" /></label>
+        <button id="checkout-btn" disabled>Checkout</button>
+      </div>
+    </section>
+
+    <section id="order-section" class="hidden">
+      <h2>Order</h2>
+      <div>Order ID: <code id="order-id"></code></div>
+      <div>Status: <span id="order-status"></span></div>
+      <div>Tracking: <span id="order-tracking"></span></div>
+      <pre id="order-json"></pre>
+    </section>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="modal-actions"><button id="modal-close">OK</button></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

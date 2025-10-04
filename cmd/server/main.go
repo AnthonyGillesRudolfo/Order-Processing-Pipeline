@@ -1,41 +1,51 @@
 package main
 
 import (
-    "context"
-    "log"
-    "os"
-    "strconv"
-    internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
-    internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
-    internalshipping "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/shipping"
-    postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
-    restate "github.com/restatedev/sdk-go"
-    "github.com/restatedev/sdk-go/server"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"bytes"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"runtime"
+
+	"github.com/google/uuid"
+	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
+	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
+	internalshipping "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/shipping"
+	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
+	restate "github.com/restatedev/sdk-go"
+	"github.com/restatedev/sdk-go/server"
 )
 
 func main() {
 	log.Println("Starting Order Processing Pipeline (modular server)...")
 
-    // Load DB config from environment variables with sensible defaults
-    // ORDER_DB_HOST, ORDER_DB_PORT, ORDER_DB_NAME, ORDER_DB_USER, ORDER_DB_PASSWORD
-    dbHost := getenv("ORDER_DB_HOST", "localhost")
-    dbPortStr := getenv("ORDER_DB_PORT", "5432")
-    dbPort, err := strconv.Atoi(dbPortStr)
-    if err != nil {
-        log.Printf("Invalid ORDER_DB_PORT '%s', defaulting to 5432", dbPortStr)
-        dbPort = 5432
-    }
-    dbName := getenv("ORDER_DB_NAME", "orderpipeline")
-    dbUser := getenv("ORDER_DB_USER", "orderpipelineadmin")
-    dbPassword := getenv("ORDER_DB_PASSWORD", "")
+	// Load DB config from environment variables with sensible defaults
+	// ORDER_DB_HOST, ORDER_DB_PORT, ORDER_DB_NAME, ORDER_DB_USER, ORDER_DB_PASSWORD
+	dbHost := getenv("ORDER_DB_HOST", "localhost")
+	dbPortStr := getenv("ORDER_DB_PORT", "5432")
+	dbPort, err := strconv.Atoi(dbPortStr)
+	if err != nil {
+		log.Printf("Invalid ORDER_DB_PORT '%s', defaulting to 5432", dbPortStr)
+		dbPort = 5432
+	}
+	dbName := getenv("ORDER_DB_NAME", "orderpipeline")
+	dbUser := getenv("ORDER_DB_USER", "orderpipelineadmin")
+	dbPassword := getenv("ORDER_DB_PASSWORD", "")
 
-    dbConfig := postgres.DatabaseConfig{
-        Host:     dbHost,
-        Port:     dbPort,
-        Database: dbName,
-        User:     dbUser,
-        Password: dbPassword,
-    }
+	dbConfig := postgres.DatabaseConfig{
+		Host:     dbHost,
+		Port:     dbPort,
+		Database: dbName,
+		User:     dbUser,
+		Password: dbPassword,
+	}
 
 	log.Println("Connecting to PostgreSQL database...")
 	if err := postgres.InitDatabase(dbConfig); err != nil {
@@ -49,6 +59,13 @@ func main() {
 			}
 		}()
 	}
+
+	// Start simple web UI + API on :3000
+	go func() {
+		if err := startWebUIAndAPI(); err != nil {
+			log.Printf("Web UI/API server error: %v", err)
+		}
+	}()
 
 	// Create Restate server
 	srv := server.NewRestate()
@@ -82,6 +99,9 @@ func main() {
 	log.Println("Register with Restate:")
 	log.Println("  restate deployments register http://localhost:9081")
 	log.Println("")
+	log.Println("Open the test UI:")
+	log.Println("  http://localhost:3000")
+	log.Println("")
 
 	if err := srv.Start(context.Background(), ":9081"); err != nil {
 		log.Printf("Server error: %v", err)
@@ -91,8 +111,158 @@ func main() {
 
 // getenv returns the value of the environment variable key if set, otherwise defaultVal
 func getenv(key, defaultVal string) string {
-    if v := os.Getenv(key); v != "" {
-        return v
-    }
-    return defaultVal
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
+}
+
+/*** Simple Web UI + API ***/
+
+type checkoutItem struct {
+	ProductID string `json:"product_id"`
+	Quantity  int32  `json:"quantity"`
+}
+
+type checkoutRequest struct {
+	CustomerID string         `json:"customer_id"`
+	Items      []checkoutItem `json:"items"`
+}
+
+func startWebUIAndAPI() error {
+	mux := http.NewServeMux()
+
+	// Static web files under / (index.html) and /static/*
+	_, src, _, _ := runtime.Caller(0)
+	base := filepath.Dir(src) // cmd/server
+	webDir := filepath.Join(base, "..", "..", "web")
+	webDir, _ = filepath.Abs(webDir)
+
+	fileServer := http.FileServer(http.Dir(webDir))
+	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
+	mux.Handle("/", fileServer)
+
+	// API
+	mux.HandleFunc("/api/checkout", handleCheckout)
+	mux.HandleFunc("/api/orders/", handleGetOrderStatus)
+
+	log.Println("Web UI available on :3000 (serving ./web)")
+	return http.ListenAndServe(":3000", withCORS(mux))
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simple permissive CORS for local testing
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func handleCheckout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req checkoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if req.CustomerID == "" || len(req.Items) == 0 {
+		http.Error(w, "customer_id and items are required", http.StatusBadRequest)
+		return
+	}
+
+	orderID := "web-" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+
+	in := map[string]any{
+		"customer_id": req.CustomerID,
+		"items":       req.Items,
+	}
+	inBytes, _ := json.Marshal(in)
+
+	// Call Restate runtime HTTP endpoint directly
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/order.sv1.OrderService/%s/CreateOrder", runtimeURL, orderID)
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(inBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "workflow start failed", "detail": detail})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"order_id": orderID})
+}
+
+func handleGetOrderStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// /api/orders/{id}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/orders/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "order id required", http.StatusBadRequest)
+		return
+	}
+	orderID := parts[0]
+
+	resp, err := getOrderFromDB(orderID)
+	if err != nil {
+		http.Error(w, "order not found or DB unavailable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func getOrderFromDB(orderID string) (map[string]any, error) {
+	if postgres.DB == nil {
+		return nil, sql.ErrConnDone
+	}
+
+	row := postgres.DB.QueryRow(`
+		SELECT id, customer_id, status, total_amount, payment_id, shipment_id, tracking_number, updated_at
+		FROM orders WHERE id = $1
+	`, orderID)
+
+	var (
+		id, customerID, status, paymentID, shipmentID, trackingNumber string
+		totalAmount                                                    sql.NullFloat64
+		updatedAt                                                      string
+	)
+	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &shipmentID, &trackingNumber, &updatedAt); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"order": map[string]any{
+			"id":              id,
+			"customer_id":     customerID,
+			"status":          status,
+			"total_amount":    totalAmount.Float64,
+			"payment_id":      paymentID,
+			"shipment_id":     shipmentID,
+			"tracking_number": trackingNumber,
+			"updated_at":      updatedAt,
+		},
+	}, nil
 }
