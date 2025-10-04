@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package order.sv1;
+
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpb";
+
+import "common.proto";
+
+// Shipping domain
+message CreateShipmentRequest {
+  string order_id = 1;
+  ShippingAddress shipping_address = 2;
+  ShippingMethod shipping_method = 3;
+}
+
+message CreateShipmentResponse {
+  string shipment_id = 1;
+  string tracking_number = 2;
+  string estimated_delivery = 3;
+}
+
+message ShippingAddress {
+  string street = 1;
+  string city = 2;
+  string state = 3;
+  string postal_code = 4;
+  string country = 5;
+  string recipient_name = 6;
+  string phone_number = 7;
+}
+
+message ShippingMethod {
+  string carrier = 1;
+  string service_type = 2;
+  double cost = 3;
+  int32 estimated_days = 4;
+}
+
+message TrackShipmentRequest {
+  string shipment_id = 1;
+}
+
+message ShipmentEvent {
+  string timestamp = 1;
+  string location = 2;
+  string description = 3;
+  ShipmentStatus status = 4; // from common.proto
+}
+
+message TrackShipmentResponse {
+  string shipment_id = 1;
+  ShipmentStatus status = 2; // from common.proto
+  string current_location = 3;
+  string estimated_delivery = 4;
+  repeated ShipmentEvent events = 5;
+}
+
+service ShippingService {
+  rpc CreateShipment(CreateShipmentRequest) returns (CreateShipmentResponse);
+  rpc TrackShipment(TrackShipmentRequest) returns (TrackShipmentResponse);
+}

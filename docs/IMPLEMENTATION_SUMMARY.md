@@ -132,96 +132,12 @@ watch -n 2 'restate workflow get order.sv1.OrderService/test-001 GetOrder'
 
 ### Expected Output Timeline
 
-**At 0-5 seconds:**
 ```json
 {
-  "order": {
-    "id": "test-001",
-    "customer_id": "customer-001",
-    "status": "PENDING"
-  }
+  "order": { "id": "test-001", "customer_id": "customer-001", "status": "PENDING" }
 }
 ```
-
-**At 5-10 seconds:**
-```json
-{
-  "order": {
-    "id": "test-001",
-    "customer_id": "customer-001",
-    "status": "PROCESSING"
-  },
-  "payment_info": {
-    "payment_id": "...",
-    "status": "PAYMENT_COMPLETED",
-    "amount": 20.0
-  }
-}
-```
-
-**At 10-20 seconds:**
-```json
-{
-  "order": {
-    "id": "test-001",
-    "customer_id": "customer-001",
-    "status": "SHIPPED"
-  },
-  "payment_info": { ... },
-  "shipment_info": {
-    "shipment_id": "...",
-    "tracking_number": "...",
-    "carrier": "FedEx",
-    "status": "SHIPMENT_IN_TRANSIT"
-  }
-}
-```
-
-**At 20+ seconds:**
-```json
-{
-  "order": {
-    "id": "test-001",
-    "customer_id": "customer-001",
-    "status": "DELIVERED"
-  },
-  "payment_info": { ... },
-  "shipment_info": {
-    "shipment_id": "...",
-    "tracking_number": "...",
-    "carrier": "FedEx",
-    "status": "SHIPMENT_DELIVERED"
-  }
-}
-```
-
-## 🚀 Next Steps
-
-1. **Test the implementation:**
-   ```bash
-   # Build
-   go build -o order-processing-pipeline .
-   
-   # Run application
-   ./order-processing-pipeline
-   
-   # In another terminal, register with Restate
-   restate deployments register http://localhost:9081
-   
-   # Create test order and observe status transitions
-   ./test_status_tracking.sh
-   ```
-
-2. **Verify observable delays:**
-   - PENDING visible for ~5 seconds
-   - PROCESSING visible for ~5 seconds
-   - SHIPPED visible for ~10 seconds
-   - DELIVERED as final status
-
-3. **Check database persistence:**
-   ```sql
-   SELECT id, status, created_at FROM orders WHERE id = 'test-001';
-   ```
+...
 
 ## 📚 Related Documentation
 
@@ -236,4 +152,3 @@ watch -n 2 'restate workflow get order.sv1.OrderService/test-001 GetOrder'
 3. **Testing** - Can verify workflow progression in real-time
 4. **Monitoring** - Can track time spent in each status
 5. **Transparency** - Complete visibility into order lifecycle
-

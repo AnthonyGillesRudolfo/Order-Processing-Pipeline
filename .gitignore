@@ -16,6 +16,3 @@ build/
 # Restate / Postgres local data (if any)
 data/
 pgdata/
-
-# Markdowns
-*.md

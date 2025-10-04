@@ -166,7 +166,7 @@ Client
 
 ### 1. Set Up PostgreSQL Database
 
-See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed instructions.
+See [DATABASE_SETUP.md](../DATABASE_SETUP.md) for detailed instructions.
 
 **Quick setup:**
 ```bash
@@ -189,10 +189,7 @@ go build -o order-processing-pipeline ./cmd/server
 
 ### 3. Start the Server
 ```bash
-# Optional: run migrations first
 make migrate-up
-
-# Start with env-configured DB (see Makefile for defaults)
 make run
 ```
 
@@ -221,30 +218,6 @@ restate workflow get order.sv1.OrderService/order-123 GetOrder \
 # Track shipment (virtual object key = shipment-789)
 restate object call order.sv1.ShippingService/shipment-789 TrackShipment \
   --input '{"shipment_id": "shipment-789"}'
-```
-
-### 6. Query the Database
-
-```sql
--- Connect to database
-psql -U orderpipelineadmin -d orderpipeline
-
--- View all orders
-SELECT * FROM orders ORDER BY created_at DESC;
-
--- View orders with payment and shipment info
-SELECT
-    o.id,
-    o.customer_id,
-    o.status,
-    o.total_amount,
-    p.payment_method,
-    s.tracking_number,
-    s.carrier
-FROM orders o
-LEFT JOIN payments p ON o.payment_id = p.id
-LEFT JOIN shipments s ON o.shipment_id = s.id
-ORDER BY o.created_at DESC;
 ```
 
 ## Benefits of This Architecture
@@ -283,4 +256,3 @@ ORDER BY o.created_at DESC;
 - Implement database migrations for schema changes
 - Add database connection pooling configuration
 - Consider read replicas for scaling queries
-

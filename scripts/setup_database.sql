@@ -22,7 +22,7 @@ GRANT ALL ON SCHEMA public TO orderpipelineadmin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO orderpipelineadmin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO orderpipelineadmin;
 
--- The application will automatically create the following tables on startup:
+-- The application will automatically create the following tables on startup (until migrations run):
 -- 1. orders - Stores order information
 -- 2. payments - Stores payment transactions
 -- 3. shipments - Stores shipment tracking information
@@ -32,4 +32,3 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO orderpipelin
 -- \du                         -- List users
 -- \c orderpipeline            -- Connect to database
 -- \dt                         -- List tables (after running the application)
-
