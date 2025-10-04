@@ -12,6 +12,7 @@ message Order {
   string customer_id = 2;
   repeated OrderItems items = 3;
   OrderStatus status = 4; // from common.proto
+  string merchant_id = 5;
 }
 
 message OrderItems {
@@ -22,6 +23,7 @@ message OrderItems {
 message CreateOrderRequest {
   string customer_id = 1;
   repeated OrderItems items = 2;
+  string merchant_id = 3;
 }
 
 message CreateOrderResponse {

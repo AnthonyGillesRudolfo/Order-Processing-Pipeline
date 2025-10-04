@@ -128,6 +128,43 @@ Tables created in initial migration:
 - `payments`
 - `shipments`
 
+## Migrations with golang-migrate
+
+We use the `golang-migrate` CLI to create and apply migrations.
+
+### Install CLI
+
+**macOS (Homebrew):**
+```bash
+brew install golang-migrate
+```
+
+**Other platforms and docs:**
+See `https://github.com/golang-migrate/migrate`.
+
+### Create a new migration
+```bash
+make migrate-create name=merchants_items
+```
+This creates two files in `db/migrations`: `*_merchants_items.up.sql` and `*_merchants_items.down.sql`.
+
+### Apply migrations (up)
+```bash
+make migrate-up-cli
+```
+
+### Roll back last migration (down 1)
+```bash
+make migrate-down-cli
+```
+
+### Force migration version (recovery)
+```bash
+make migrate-force version=2
+```
+
+The CLI reads DB settings from Makefile variables: `ORDER_DB_HOST`, `ORDER_DB_PORT`, `ORDER_DB_NAME`, `ORDER_DB_USER`, `ORDER_DB_PASSWORD`.
+
 ## Running the Application
 
 ```bash

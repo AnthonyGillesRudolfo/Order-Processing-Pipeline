@@ -18,6 +18,7 @@ import (
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
 	internalshipping "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/shipping"
+	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
@@ -88,6 +89,14 @@ func main() {
 		Handler("TrackShipment", restate.NewObjectSharedHandler(internalshipping.TrackShipment))
 	srv = srv.Bind(shippingVirtualObject)
 
+	// Bind MerchantService as a Virtual Object
+	merchantVirtualObject := restate.NewObject("merchant.sv1.MerchantService", restate.WithProtoJSON).
+		Handler("GetMerchant", restate.NewObjectSharedHandler(internalmerchant.GetMerchant)).
+		Handler("ListItems", restate.NewObjectSharedHandler(internalmerchant.ListItems)).
+		Handler("GetItem", restate.NewObjectSharedHandler(internalmerchant.GetItem)).
+		Handler("UpdateStock", restate.NewObjectHandler(internalmerchant.UpdateStock))
+	srv = srv.Bind(merchantVirtualObject)
+
 	// Start the server on port 9081
 	log.Println("Restate server listening on :9081")
 	log.Println("")
@@ -95,6 +104,7 @@ func main() {
 	log.Println("  - OrderService: WORKFLOW (keyed by order ID)")
 	log.Println("  - PaymentService: VIRTUAL OBJECT (keyed by payment ID)")
 	log.Println("  - ShippingService: VIRTUAL OBJECT (keyed by shipment ID)")
+	log.Println("  - MerchantService: VIRTUAL OBJECT (keyed by merchant ID)")
 	log.Println("")
 	log.Println("Register with Restate:")
 	log.Println("  restate deployments register http://localhost:9081")

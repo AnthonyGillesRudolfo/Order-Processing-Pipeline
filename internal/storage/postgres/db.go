@@ -69,22 +69,51 @@ func CloseDatabase() error {
 }
 
 // Order ops
-func InsertOrder(orderID, customerID string, status orderpb.OrderStatus, totalAmount float64) error {
+func InsertOrder(orderID, customerID, merchantID string, status orderpb.OrderStatus, totalAmount float64) error {
 	query := `
 		INSERT INTO orders (id, customer_id, status, total_amount)
-		VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE SET
 			customer_id = EXCLUDED.customer_id,
 			status = EXCLUDED.status,
 			total_amount = EXCLUDED.total_amount,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := DB.Exec(query, orderID, customerID, status.String(), totalAmount)
+    // Update merchant_id separately to keep backward compatibility with existing params order
+    _, err := DB.Exec(query, orderID, customerID, status.String(), totalAmount)
 	if err != nil {
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
+    if merchantID != "" {
+        if _, err := DB.Exec(`UPDATE orders SET merchant_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, merchantID, orderID); err != nil {
+            return fmt.Errorf("failed to set order merchant_id: %w", err)
+        }
+    }
 	log.Printf("[DB] Inserted/Updated order: %s", orderID)
 	return nil
+}
+
+func InsertOrderItems(orderID, merchantID string, items []*orderpb.OrderItems) error {
+    if len(items) == 0 { return nil }
+    for _, it := range items {
+        qty := it.Quantity
+        unit := 1.00
+        subtotal := float64(qty) * unit
+        _, err := DB.Exec(`
+            INSERT INTO order_items (order_id, item_id, merchant_id, name, quantity, unit_price, subtotal)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (order_id, item_id) DO UPDATE SET
+                merchant_id = EXCLUDED.merchant_id,
+                name = EXCLUDED.name,
+                quantity = EXCLUDED.quantity,
+                unit_price = EXCLUDED.unit_price,
+                subtotal = EXCLUDED.subtotal,
+                updated_at = CURRENT_TIMESTAMP
+        `, orderID, it.ProductId, merchantID, it.ProductId, qty, unit, subtotal)
+        if err != nil { return fmt.Errorf("failed to insert order item %s: %w", it.ProductId, err) }
+    }
+    log.Printf("[DB] Inserted/Updated %d order items for order: %s", len(items), orderID)
+    return nil
 }
 
 func UpdateOrderStatusDB(orderID string, status orderpb.OrderStatus) error {

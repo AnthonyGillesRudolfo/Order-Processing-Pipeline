@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package merchant.sv1;
+
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1;merchantpb";
+
+// Merchant domain
+message Merchant {
+  string merchant_id = 1;
+  string name = 2;
+  repeated Item items = 3;
+}
+
+message Item {
+  string item_id = 1;
+  string name = 2;
+  int32 quantity = 3; // default 999 enforced by service/storage
+  double price = 4;
+}
+
+message GetMerchantRequest {
+  string merchant_id = 1;
+}
+
+message ListItemsRequest {
+  string merchant_id = 1;
+  int32 page_size = 2;      // 0 => server default
+  string page_token = 3;    // empty => first page
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_page_token = 2; // empty => no more pages
+}
+
+message GetItemRequest {
+  string merchant_id = 1;
+  string item_id = 2;
+}
+
+message UpdateStockRequest {
+  string merchant_id = 1;
+  string item_id = 2;
+  oneof stock_update {
+    int32 set_quantity = 3;      // set absolute quantity
+    int32 increment_delta = 4;   // add (can be negative)
+  }
+}
+
+message UpdateStockResponse {
+  Item item = 1; // updated item
+}
+
+service MerchantService {
+  rpc GetMerchant(GetMerchantRequest) returns (Merchant);
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc GetItem(GetItemRequest) returns (Item);
+  rpc UpdateStock(UpdateStockRequest) returns (UpdateStockResponse);
+}
+
+
