@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package order.sv1;
+
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpb";
+
+import "common.proto";
+
+// Orders domain
+message Order {
+  string id = 1;
+  string customer_id = 2;
+  repeated OrderItems items = 3;
+  OrderStatus status = 4; // from common.proto
+}
+
+message OrderItems {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+message CreateOrderRequest {
+  string customer_id = 1;
+  repeated OrderItems items = 2;
+}
+
+message CreateOrderResponse {
+  string order_id = 1;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message PaymentInfo {
+  string payment_id = 1;
+  PaymentStatus status = 2; // from common.proto
+  double amount = 3;
+  string payment_method = 4;
+}
+
+message ShipmentInfo {
+  string shipment_id = 1;
+  string tracking_number = 2;
+  string carrier = 3;
+  ShipmentStatus status = 4; // from common.proto
+  string current_location = 5;
+  string estimated_delivery = 6;
+}
+
+message GetOrderResponse {
+  Order order = 1;
+  PaymentInfo payment_info = 2;
+  ShipmentInfo shipment_info = 3;
+}
+
+message UpdateOrderStatusRequest {
+  string order_id = 1;
+  OrderStatus status = 2; // from common.proto
+}
+
+message UpdateOrderStatusResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc UpdateOrderStatus(UpdateOrderStatusRequest) returns (UpdateOrderStatusResponse);
+}

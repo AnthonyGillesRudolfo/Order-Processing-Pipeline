@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package order.sv1;
+
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpb";
+
+// Shared enums and types across services
+
+enum OrderStatus {
+  PENDING = 0;           // Order created, payment not yet completed
+  PROCESSING = 1;        // Payment completed, shipment not yet created
+  SHIPPED = 2;           // Shipment created and in transit
+  DELIVERED = 3;         // Shipment delivered to customer
+  CANCELLED = 4;         // Order cancelled (payment failed or other issues)
+}
+
+enum PaymentStatus {
+  PAYMENT_PENDING = 0;
+  PAYMENT_PROCESSING = 1;
+  PAYMENT_COMPLETED = 2;
+  PAYMENT_FAILED = 3;
+  PAYMENT_REFUNDED = 4;
+}
+
+enum ShipmentStatus {
+  SHIPMENT_CREATED = 0;
+  SHIPMENT_PICKED_UP = 1;
+  SHIPMENT_IN_TRANSIT = 2;
+  SHIPMENT_OUT_FOR_DELIVERY = 3;
+  SHIPMENT_DELIVERED = 4;
+  SHIPMENT_EXCEPTION = 5;
+}
