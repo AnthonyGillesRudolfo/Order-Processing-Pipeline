@@ -6,8 +6,8 @@
 -- Create the database
 CREATE DATABASE orderpipeline;
 
--- Create the user (with no password as specified)
-CREATE USER orderpipelineadmin;
+-- Create the user
+CREATE USER orderpipelineadmin PASSWORD 'asdf';
 
 -- Grant all privileges on the database to the user
 GRANT ALL PRIVILEGES ON DATABASE orderpipeline TO orderpipelineadmin;
