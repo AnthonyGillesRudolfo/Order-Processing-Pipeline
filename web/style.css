@@ -28,3 +28,49 @@ pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow: auto; }
 .modal-box { background: #fff; width: min(520px, 92vw); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.15); padding: 16px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .modal-box h3 { margin: 0 0 8px 0; }
+
+/* Order cards styling */
+#orders-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.order-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  transition: box-shadow 0.2s ease;
+}
+
+.order-card:hover {
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.order-card > div {
+  margin-bottom: 8px;
+}
+
+.order-card > div:last-child {
+  margin-bottom: 0;
+}
+
+.order-card code {
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.875rem;
+}
+
+.order-card a {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.order-card a:hover {
+  text-decoration: underline;
+}

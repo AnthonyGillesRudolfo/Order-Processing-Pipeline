@@ -165,6 +165,7 @@ func startWebUIAndAPI() error {
 	mux.HandleFunc("/api/orders/", handleOrders)
 	mux.HandleFunc("/api/merchants/", handleGetMerchantItems)
 	mux.HandleFunc("/api/debug/fix-orders", handleFixOrders)
+	mux.HandleFunc("/api/webhooks/xendit", handleXenditWebhook)
 
 	log.Println("Web UI available on :3000 (serving ./web)")
 	return http.ListenAndServe(":3000", withCORS(mux))
@@ -543,4 +544,179 @@ func handleFixOrders(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"message": "Orders fixed successfully"})
+}
+
+// handleXenditWebhook handles Xendit payment callbacks
+func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Verify the callback token
+	expectedToken := os.Getenv("XENDIT_CALLBACK_TOKEN")
+	if expectedToken == "" {
+		log.Printf("[Xendit Webhook] WARNING: XENDIT_CALLBACK_TOKEN not set, skipping verification")
+	} else {
+		receivedToken := r.Header.Get("x-callback-token")
+		if receivedToken != expectedToken {
+			log.Printf("[Xendit Webhook] Invalid callback token: expected=%s, received=%s", expectedToken, receivedToken)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Parse the webhook payload
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("[Xendit Webhook] Failed to decode payload: %v", err)
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[Xendit Webhook] Received payload: %+v", payload)
+
+	// Extract key fields from Xendit webhook
+	externalID, _ := payload["external_id"].(string)
+	status, _ := payload["status"].(string)
+	invoiceID, _ := payload["id"].(string)
+
+	if externalID == "" {
+		log.Printf("[Xendit Webhook] Missing external_id in payload")
+		http.Error(w, "missing external_id", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[Xendit Webhook] Processing callback: external_id=%s, status=%s, invoice_id=%s", externalID, status, invoiceID)
+
+	// Handle different payment statuses
+	switch status {
+	case "PAID":
+		log.Printf("[Xendit Webhook] Payment completed for external_id: %s", externalID)
+
+		// Get order information from database
+		orderInfo, err := getOrderFromDBByPaymentID(externalID)
+		if err != nil {
+			log.Printf("[Xendit Webhook] Failed to find order for payment_id %s: %v", externalID, err)
+			http.Error(w, "order not found", http.StatusNotFound)
+			return
+		}
+
+		orderMap, _ := orderInfo["order"].(map[string]any)
+		orderID, _ := orderMap["id"].(string)
+
+		if orderID == "" {
+			log.Printf("[Xendit Webhook] Order ID not found for payment_id %s", externalID)
+			http.Error(w, "order id not found", http.StatusInternalServerError)
+			return
+		}
+
+		// Mark payment as completed via Restate
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		payURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentCompleted", runtimeURL, externalID)
+
+		payReq := map[string]any{
+			"payment_id": externalID,
+			"order_id":   orderID,
+		}
+
+		if err := postJSON(payURL, payReq); err != nil {
+			log.Printf("[Xendit Webhook] Failed to mark payment completed: %v", err)
+			http.Error(w, "failed to mark payment completed", http.StatusInternalServerError)
+			return
+		}
+
+		// Resolve the awakeable to continue the order workflow
+		var awakeableID string
+		if postgres.DB != nil {
+			row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
+			if err := row.Scan(&awakeableID); err != nil {
+				log.Printf("[Xendit Webhook] Failed to get awakeable ID for order %s: %v", orderID, err)
+			}
+		}
+
+		if awakeableID != "" {
+			// Resolve the awakeable using Restate's built-in awakeable resolution API
+			awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID)
+			awakeableBody := "payment_completed"
+			awakeableBytes := []byte(fmt.Sprintf(`"%s"`, awakeableBody))
+
+			awakeableResp, err := http.Post(awakeableURL, "application/json", bytes.NewReader(awakeableBytes))
+			if err != nil {
+				log.Printf("[Xendit Webhook] Failed to resolve awakeable: %v", err)
+			} else {
+				defer awakeableResp.Body.Close()
+				if awakeableResp.StatusCode >= 200 && awakeableResp.StatusCode < 300 {
+					log.Printf("[Xendit Webhook] Successfully resolved awakeable %s for order %s", awakeableID, orderID)
+				} else {
+					log.Printf("[Xendit Webhook] Failed to resolve awakeable, status: %d", awakeableResp.StatusCode)
+				}
+			}
+		} else {
+			log.Printf("[Xendit Webhook] No awakeable ID found for order %s", orderID)
+		}
+
+		log.Printf("[Xendit Webhook] Successfully processed payment completion for order %s", orderID)
+
+	case "EXPIRED":
+		log.Printf("[Xendit Webhook] Payment expired for external_id: %s", externalID)
+		// Could implement payment expiration logic here if needed
+
+	case "FAILED":
+		log.Printf("[Xendit Webhook] Payment failed for external_id: %s", externalID)
+		// Could implement payment failure logic here if needed
+
+	default:
+		log.Printf("[Xendit Webhook] Unhandled status: %s for external_id: %s", status, externalID)
+	}
+
+	// Always respond with 200 OK to acknowledge receipt
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "received"})
+}
+
+// getOrderFromDBByPaymentID retrieves order information by payment ID
+func getOrderFromDBByPaymentID(paymentID string) (map[string]any, error) {
+	if postgres.DB == nil {
+		return nil, sql.ErrConnDone
+	}
+
+	row := postgres.DB.QueryRow(`
+		SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
+		       COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
+		FROM orders o
+		LEFT JOIN payments p ON p.id = o.payment_id
+		WHERE o.payment_id = $1
+	`, paymentID)
+
+	var (
+		id, customerID, status, paymentIDResult string
+		shipmentID, trackingNumber              sql.NullString
+		totalAmount                             sql.NullFloat64
+		updatedAt                               string
+		paymentStatus                           string
+		invoiceURL                              string
+	)
+	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentIDResult, &shipmentID, &trackingNumber, &updatedAt, &paymentStatus, &invoiceURL); err != nil {
+		log.Printf("[Xendit Webhook] getOrderFromDBByPaymentID failed for payment_id %s: %v", paymentID, err)
+		return nil, err
+	}
+
+	log.Printf("[Xendit Webhook] getOrderFromDBByPaymentID found order %s: customer=%s, status=%s, payment_id=%s", id, customerID, status, paymentIDResult)
+	return map[string]any{
+		"order": map[string]any{
+			"id":              id,
+			"customer_id":     customerID,
+			"status":          status,
+			"total_amount":    totalAmount.Float64,
+			"payment_id":      paymentIDResult,
+			"shipment_id":     shipmentID.String,
+			"tracking_number": trackingNumber.String,
+			"updated_at":      updatedAt,
+		},
+		"payment": map[string]any{
+			"status":      paymentStatus,
+			"invoice_url": invoiceURL,
+		},
+	}, nil
 }

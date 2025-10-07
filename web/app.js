@@ -191,34 +191,13 @@ let currentMerchantId = 'm_001'; // Default merchant
         div.className = 'order-card';
         const items = (o.items || []).map(it => `${(it.name || it.product_id)} x${it.quantity}`).join(', ');
         const inv = o.invoice_url ? `<a href="${o.invoice_url}" target="_blank" rel="noopener">invoice</a>` : '-';
-        const confirmBtn = (o.payment_status || '').toUpperCase() === 'PAYMENT_PENDING'
-          ? `<button class="confirm-paid" data-order="${o.id}">Confirm Payment</button>`
-          : '';
         div.innerHTML = `
           <div><b>ID</b>: <code>${o.id}</code></div>
           <div><b>Status</b>: ${o.status} | <b>Payment</b>: ${o.payment_status || '-'}</div>
           <div><b>Items</b>: ${items || '-'}</div>
-          <div><b>Invoice</b>: ${inv} ${confirmBtn}</div>
+          <div><b>Invoice</b>: ${inv}</div>
         `;
         ordersListEl.appendChild(div);
-      });
-      // Wire confirm buttons
-      document.querySelectorAll('.confirm-paid').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const orderId = e.target.getAttribute('data-order');
-          try {
-            const res = await fetch(`/api/orders/${orderId}/simulate_payment_success`, { method: 'POST' });
-            if (!res.ok) {
-              let detail = '';
-              try { const j = await res.json(); detail = j.detail || j.error || JSON.stringify(j); } catch { try { detail = await res.text(); } catch {} }
-              throw new Error(detail || `HTTP ${res.status}`);
-            }
-            showModal('Payment simulated', `Order <code>${orderId}</code> will continue to shipping.`);
-            await loadOrders();
-          } catch (err) {
-            showModal('Error', String(err));
-          }
-        });
       });
     } catch {}
   }
