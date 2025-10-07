@@ -83,11 +83,15 @@ func (x *ProcessPaymentRequest) GetAmount() float64 {
 }
 
 type ProcessPaymentResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
-	Status        PaymentStatus          `protobuf:"varint,2,opt,name=status,proto3,enum=order.sv1.PaymentStatus" json:"status,omitempty"` // from common.proto
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	Status    PaymentStatus          `protobuf:"varint,2,opt,name=status,proto3,enum=order.sv1.PaymentStatus" json:"status,omitempty"` // from common.proto
+	// URL to Xendit's hosted invoice page (if created)
+	InvoiceUrl string `protobuf:"bytes,3,opt,name=invoice_url,json=invoiceUrl,proto3" json:"invoice_url,omitempty"`
+	// Xendit's invoice id (if created)
+	XenditInvoiceId string `protobuf:"bytes,4,opt,name=xendit_invoice_id,json=xenditInvoiceId,proto3" json:"xendit_invoice_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ProcessPaymentResponse) Reset() {
@@ -132,6 +136,20 @@ func (x *ProcessPaymentResponse) GetStatus() PaymentStatus {
 		return x.Status
 	}
 	return PaymentStatus_PAYMENT_PENDING
+}
+
+func (x *ProcessPaymentResponse) GetInvoiceUrl() string {
+	if x != nil {
+		return x.InvoiceUrl
+	}
+	return ""
+}
+
+func (x *ProcessPaymentResponse) GetXenditInvoiceId() string {
+	if x != nil {
+		return x.XenditInvoiceId
+	}
+	return ""
 }
 
 type PaymentMethod struct {
@@ -420,6 +438,102 @@ func (x *DigitalWallet) GetProvider() string {
 	return ""
 }
 
+type MarkPaymentCompletedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	OrderId       string                 `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkPaymentCompletedRequest) Reset() {
+	*x = MarkPaymentCompletedRequest{}
+	mi := &file_payment_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkPaymentCompletedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkPaymentCompletedRequest) ProtoMessage() {}
+
+func (x *MarkPaymentCompletedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkPaymentCompletedRequest.ProtoReflect.Descriptor instead.
+func (*MarkPaymentCompletedRequest) Descriptor() ([]byte, []int) {
+	return file_payment_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *MarkPaymentCompletedRequest) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+func (x *MarkPaymentCompletedRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+type MarkPaymentCompletedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkPaymentCompletedResponse) Reset() {
+	*x = MarkPaymentCompletedResponse{}
+	mi := &file_payment_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkPaymentCompletedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkPaymentCompletedResponse) ProtoMessage() {}
+
+func (x *MarkPaymentCompletedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkPaymentCompletedResponse.ProtoReflect.Descriptor instead.
+func (*MarkPaymentCompletedResponse) Descriptor() ([]byte, []int) {
+	return file_payment_service_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MarkPaymentCompletedResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 var File_payment_service_proto protoreflect.FileDescriptor
 
 const file_payment_service_proto_rawDesc = "" +
@@ -428,11 +542,14 @@ const file_payment_service_proto_rawDesc = "" +
 	"\x15ProcessPaymentRequest\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\x12?\n" +
 	"\x0epayment_method\x18\x02 \x01(\v2\x18.order.sv1.PaymentMethodR\rpaymentMethod\x12\x16\n" +
-	"\x06amount\x18\x03 \x01(\x01R\x06amount\"i\n" +
+	"\x06amount\x18\x03 \x01(\x01R\x06amount\"\xb6\x01\n" +
 	"\x16ProcessPaymentResponse\x12\x1d\n" +
 	"\n" +
 	"payment_id\x18\x01 \x01(\tR\tpaymentId\x120\n" +
-	"\x06status\x18\x02 \x01(\x0e2\x18.order.sv1.PaymentStatusR\x06status\"\xd6\x01\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x18.order.sv1.PaymentStatusR\x06status\x12\x1f\n" +
+	"\vinvoice_url\x18\x03 \x01(\tR\n" +
+	"invoiceUrl\x12*\n" +
+	"\x11xendit_invoice_id\x18\x04 \x01(\tR\x0fxenditInvoiceId\"\xd6\x01\n" +
 	"\rPaymentMethod\x128\n" +
 	"\vcredit_card\x18\x01 \x01(\v2\x15.order.sv1.CreditCardH\x00R\n" +
 	"creditCard\x12>\n" +
@@ -454,9 +571,16 @@ const file_payment_service_proto_rawDesc = "" +
 	"\tbank_name\x18\x03 \x01(\tR\bbankName\"H\n" +
 	"\rDigitalWallet\x12\x1b\n" +
 	"\twallet_id\x18\x01 \x01(\tR\bwalletId\x12\x1a\n" +
-	"\bprovider\x18\x02 \x01(\tR\bprovider2g\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\"W\n" +
+	"\x1bMarkPaymentCompletedRequest\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\tR\aorderId\".\n" +
+	"\x1cMarkPaymentCompletedResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xd0\x01\n" +
 	"\x0ePaymentService\x12U\n" +
-	"\x0eProcessPayment\x12 .order.sv1.ProcessPaymentRequest\x1a!.order.sv1.ProcessPaymentResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
+	"\x0eProcessPayment\x12 .order.sv1.ProcessPaymentRequest\x1a!.order.sv1.ProcessPaymentResponse\x12g\n" +
+	"\x14MarkPaymentCompleted\x12&.order.sv1.MarkPaymentCompletedRequest\x1a'.order.sv1.MarkPaymentCompletedResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
 
 var (
 	file_payment_service_proto_rawDescOnce sync.Once
@@ -470,26 +594,30 @@ func file_payment_service_proto_rawDescGZIP() []byte {
 	return file_payment_service_proto_rawDescData
 }
 
-var file_payment_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_payment_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_payment_service_proto_goTypes = []any{
-	(*ProcessPaymentRequest)(nil),  // 0: order.sv1.ProcessPaymentRequest
-	(*ProcessPaymentResponse)(nil), // 1: order.sv1.ProcessPaymentResponse
-	(*PaymentMethod)(nil),          // 2: order.sv1.PaymentMethod
-	(*CreditCard)(nil),             // 3: order.sv1.CreditCard
-	(*BankTransfer)(nil),           // 4: order.sv1.BankTransfer
-	(*DigitalWallet)(nil),          // 5: order.sv1.DigitalWallet
-	(PaymentStatus)(0),             // 6: order.sv1.PaymentStatus
+	(*ProcessPaymentRequest)(nil),        // 0: order.sv1.ProcessPaymentRequest
+	(*ProcessPaymentResponse)(nil),       // 1: order.sv1.ProcessPaymentResponse
+	(*PaymentMethod)(nil),                // 2: order.sv1.PaymentMethod
+	(*CreditCard)(nil),                   // 3: order.sv1.CreditCard
+	(*BankTransfer)(nil),                 // 4: order.sv1.BankTransfer
+	(*DigitalWallet)(nil),                // 5: order.sv1.DigitalWallet
+	(*MarkPaymentCompletedRequest)(nil),  // 6: order.sv1.MarkPaymentCompletedRequest
+	(*MarkPaymentCompletedResponse)(nil), // 7: order.sv1.MarkPaymentCompletedResponse
+	(PaymentStatus)(0),                   // 8: order.sv1.PaymentStatus
 }
 var file_payment_service_proto_depIdxs = []int32{
 	2, // 0: order.sv1.ProcessPaymentRequest.payment_method:type_name -> order.sv1.PaymentMethod
-	6, // 1: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
+	8, // 1: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
 	3, // 2: order.sv1.PaymentMethod.credit_card:type_name -> order.sv1.CreditCard
 	4, // 3: order.sv1.PaymentMethod.bank_transfer:type_name -> order.sv1.BankTransfer
 	5, // 4: order.sv1.PaymentMethod.digital_wallet:type_name -> order.sv1.DigitalWallet
 	0, // 5: order.sv1.PaymentService.ProcessPayment:input_type -> order.sv1.ProcessPaymentRequest
-	1, // 6: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
-	6, // [6:7] is the sub-list for method output_type
-	5, // [5:6] is the sub-list for method input_type
+	6, // 6: order.sv1.PaymentService.MarkPaymentCompleted:input_type -> order.sv1.MarkPaymentCompletedRequest
+	1, // 7: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
+	7, // 8: order.sv1.PaymentService.MarkPaymentCompleted:output_type -> order.sv1.MarkPaymentCompletedResponse
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
 	5, // [5:5] is the sub-list for extension type_name
 	5, // [5:5] is the sub-list for extension extendee
 	0, // [0:5] is the sub-list for field type_name
@@ -512,7 +640,7 @@ func file_payment_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payment_service_proto_rawDesc), len(file_payment_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

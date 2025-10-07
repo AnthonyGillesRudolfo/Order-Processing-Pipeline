@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
+	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	_ "github.com/lib/pq"
 )
 
@@ -54,7 +54,7 @@ func InitDatabase(config DatabaseConfig) error {
 
 	log.Printf("Successfully connected to PostgreSQL database: %s", config.Database)
 
-    // Schema is managed by migrations; do not create tables at runtime
+	// Schema is managed by migrations; do not create tables at runtime
 
 	return nil
 }
@@ -80,27 +80,40 @@ func InsertOrder(orderID, customerID, merchantID string, status orderpb.OrderSta
 			total_amount = EXCLUDED.total_amount,
 			updated_at = CURRENT_TIMESTAMP
 	`
-    // Update merchant_id separately to keep backward compatibility with existing params order
-    _, err := DB.Exec(query, orderID, customerID, status.String(), totalAmount)
+	// Update merchant_id separately to keep backward compatibility with existing params order
+	_, err := DB.Exec(query, orderID, customerID, status.String(), totalAmount)
 	if err != nil {
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
-    if merchantID != "" {
-        if _, err := DB.Exec(`UPDATE orders SET merchant_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, merchantID, orderID); err != nil {
-            return fmt.Errorf("failed to set order merchant_id: %w", err)
-        }
-    }
+	if merchantID != "" {
+		if _, err := DB.Exec(`UPDATE orders SET merchant_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, merchantID, orderID); err != nil {
+			return fmt.Errorf("failed to set order merchant_id: %w", err)
+		}
+	}
 	log.Printf("[DB] Inserted/Updated order: %s", orderID)
 	return nil
 }
 
 func InsertOrderItems(orderID, merchantID string, items []*orderpb.OrderItems) error {
-    if len(items) == 0 { return nil }
-    for _, it := range items {
-        qty := it.Quantity
-        unit := 1.00
-        subtotal := float64(qty) * unit
-        _, err := DB.Exec(`
+	if len(items) == 0 {
+		return nil
+	}
+	for _, it := range items {
+		qty := it.Quantity
+		log.Printf("[DEBUG] InsertOrderItems: processing item - ProductId='%s', Quantity=%d, merchantID='%s'", it.ProductId, qty, merchantID)
+		// Try to fetch item name and price from merchant_items table
+		var name string
+		var unit float64 = 1.00
+		if DB != nil && merchantID != "" {
+			_ = DB.QueryRow(`SELECT name, price FROM merchant_items WHERE merchant_id = $1 AND item_id = $2`, merchantID, it.ProductId).
+				Scan(&name, &unit)
+			log.Printf("[DEBUG] InsertOrderItems: lookup result - name='%s', price=%.2f", name, unit)
+		}
+		if name == "" {
+			name = it.ProductId
+		}
+		subtotal := float64(qty) * unit
+		_, err := DB.Exec(`
             INSERT INTO order_items (order_id, item_id, merchant_id, name, quantity, unit_price, subtotal)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (order_id, item_id) DO UPDATE SET
@@ -110,11 +123,13 @@ func InsertOrderItems(orderID, merchantID string, items []*orderpb.OrderItems) e
                 unit_price = EXCLUDED.unit_price,
                 subtotal = EXCLUDED.subtotal,
                 updated_at = CURRENT_TIMESTAMP
-        `, orderID, it.ProductId, merchantID, it.ProductId, qty, unit, subtotal)
-        if err != nil { return fmt.Errorf("failed to insert order item %s: %w", it.ProductId, err) }
-    }
-    log.Printf("[DB] Inserted/Updated %d order items for order: %s", len(items), orderID)
-    return nil
+        `, orderID, it.ProductId, merchantID, name, qty, unit, subtotal)
+		if err != nil {
+			return fmt.Errorf("failed to insert order item %s: %w", it.ProductId, err)
+		}
+	}
+	log.Printf("[DB] Inserted/Updated %d order items for order: %s", len(items), orderID)
+	return nil
 }
 
 func UpdateOrderStatusDB(orderID string, status orderpb.OrderStatus) error {
@@ -194,6 +209,21 @@ func UpdatePaymentStatus(paymentID string, status orderpb.PaymentStatus) error {
 		return fmt.Errorf("failed to update payment status: %w", err)
 	}
 	log.Printf("[DB] Updated payment status: %s -> %s", paymentID, status.String())
+	return nil
+}
+
+// Optional helpers for invoice persistence
+func UpdatePaymentInvoiceInfo(paymentID, invoiceURL, xenditInvoiceID string) error {
+	query := `
+        UPDATE payments
+        SET invoice_url = $1, xendit_invoice_id = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3
+    `
+	_, err := DB.Exec(query, invoiceURL, xenditInvoiceID, paymentID)
+	if err != nil {
+		return fmt.Errorf("failed to update payment invoice info: %w", err)
+	}
+	log.Printf("[DB] Updated payment invoice info: %s", paymentID)
 	return nil
 }
 

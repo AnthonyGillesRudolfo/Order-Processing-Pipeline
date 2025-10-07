@@ -16,6 +16,10 @@ message ProcessPaymentRequest {
 message ProcessPaymentResponse {
   string payment_id = 1;
   PaymentStatus status = 2; // from common.proto
+  // URL to Xendit's hosted invoice page (if created)
+  string invoice_url = 3;
+  // Xendit's invoice id (if created)
+  string xendit_invoice_id = 4;
 }
 
 message PaymentMethod {
@@ -47,4 +51,15 @@ message DigitalWallet {
 
 service PaymentService {
   rpc ProcessPayment(ProcessPaymentRequest) returns (ProcessPaymentResponse);
+  // Simulate marking a payment as completed (no real capture). Idempotent.
+  rpc MarkPaymentCompleted(MarkPaymentCompletedRequest) returns (MarkPaymentCompletedResponse);
+}
+
+message MarkPaymentCompletedRequest {
+  string payment_id = 1;
+  string order_id = 2;
+}
+
+message MarkPaymentCompletedResponse {
+  bool ok = 1;
 }

@@ -16,6 +16,8 @@ type OrderServiceClient interface {
 	CreateOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*CreateOrderRequest, *CreateOrderResponse]
 	GetOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*GetOrderRequest, *GetOrderResponse]
 	UpdateOrderStatus(opts ...sdk_go.ClientOption) sdk_go.Client[*UpdateOrderStatusRequest, *UpdateOrderStatusResponse]
+	// Continue the order after payment is marked completed
+	ContinueAfterPayment(opts ...sdk_go.ClientOption) sdk_go.Client[*ContinueAfterPaymentRequest, *ContinueAfterPaymentResponse]
 }
 
 type orderServiceClient struct {
@@ -54,6 +56,14 @@ func (c *orderServiceClient) UpdateOrderStatus(opts ...sdk_go.ClientOption) sdk_
 	return sdk_go.WithRequestType[*UpdateOrderStatusRequest](sdk_go.Service[*UpdateOrderStatusResponse](c.ctx, "order.sv1.OrderService", "UpdateOrderStatus", cOpts...))
 }
 
+func (c *orderServiceClient) ContinueAfterPayment(opts ...sdk_go.ClientOption) sdk_go.Client[*ContinueAfterPaymentRequest, *ContinueAfterPaymentResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*ContinueAfterPaymentRequest](sdk_go.Service[*ContinueAfterPaymentResponse](c.ctx, "order.sv1.OrderService", "ContinueAfterPayment", cOpts...))
+}
+
 // OrderServiceServer is the server API for order.sv1.OrderService service.
 // All implementations should embed UnimplementedOrderServiceServer
 // for forward compatibility.
@@ -61,6 +71,8 @@ type OrderServiceServer interface {
 	CreateOrder(ctx sdk_go.Context, req *CreateOrderRequest) (*CreateOrderResponse, error)
 	GetOrder(ctx sdk_go.Context, req *GetOrderRequest) (*GetOrderResponse, error)
 	UpdateOrderStatus(ctx sdk_go.Context, req *UpdateOrderStatusRequest) (*UpdateOrderStatusResponse, error)
+	// Continue the order after payment is marked completed
+	ContinueAfterPayment(ctx sdk_go.Context, req *ContinueAfterPaymentRequest) (*ContinueAfterPaymentResponse, error)
 }
 
 // UnimplementedOrderServiceServer should be embedded to have
@@ -78,6 +90,9 @@ func (UnimplementedOrderServiceServer) GetOrder(ctx sdk_go.Context, req *GetOrde
 }
 func (UnimplementedOrderServiceServer) UpdateOrderStatus(ctx sdk_go.Context, req *UpdateOrderStatusRequest) (*UpdateOrderStatusResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method UpdateOrderStatus not implemented"), 501)
+}
+func (UnimplementedOrderServiceServer) ContinueAfterPayment(ctx sdk_go.Context, req *ContinueAfterPaymentRequest) (*ContinueAfterPaymentResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method ContinueAfterPayment not implemented"), 501)
 }
 func (UnimplementedOrderServiceServer) testEmbeddedByValue() {}
 
@@ -101,5 +116,6 @@ func NewOrderServiceServer(srv OrderServiceServer, opts ...sdk_go.ServiceDefinit
 	router = router.Handler("CreateOrder", sdk_go.NewServiceHandler(srv.CreateOrder))
 	router = router.Handler("GetOrder", sdk_go.NewServiceHandler(srv.GetOrder))
 	router = router.Handler("UpdateOrderStatus", sdk_go.NewServiceHandler(srv.UpdateOrderStatus))
+	router = router.Handler("ContinueAfterPayment", sdk_go.NewServiceHandler(srv.ContinueAfterPayment))
 	return router
 }

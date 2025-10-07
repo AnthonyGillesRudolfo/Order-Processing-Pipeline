@@ -1,31 +1,35 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"bytes"
-	"fmt"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"runtime"
 
-	"github.com/google/uuid"
+	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
 	internalshipping "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/shipping"
-	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
 )
 
 func main() {
 	log.Println("Starting Order Processing Pipeline (modular server)...")
+
+	// Load .env if present
+	_ = godotenv.Load()
 
 	// Load DB config from environment variables with sensible defaults
 	// ORDER_DB_HOST, ORDER_DB_PORT, ORDER_DB_NAME, ORDER_DB_USER, ORDER_DB_PASSWORD
@@ -75,12 +79,14 @@ func main() {
 	orderWorkflow := restate.NewWorkflow("order.sv1.OrderService", restate.WithProtoJSON).
 		Handler("CreateOrder", restate.NewWorkflowHandler(internalorder.CreateOrder)).
 		Handler("GetOrder", restate.NewWorkflowSharedHandler(internalorder.GetOrder)).
-		Handler("UpdateOrderStatus", restate.NewWorkflowHandler(internalorder.UpdateOrderStatus))
+		Handler("UpdateOrderStatus", restate.NewWorkflowHandler(internalorder.UpdateOrderStatus)).
+		Handler("ContinueAfterPayment", restate.NewWorkflowHandler(internalorder.ContinueAfterPayment))
 	srv = srv.Bind(orderWorkflow)
 
 	// Bind PaymentService as a Virtual Object
 	paymentVirtualObject := restate.NewObject("order.sv1.PaymentService", restate.WithProtoJSON).
-		Handler("ProcessPayment", restate.NewObjectHandler(internalpayment.ProcessPayment))
+		Handler("ProcessPayment", restate.NewObjectHandler(internalpayment.ProcessPayment)).
+		Handler("MarkPaymentCompleted", restate.NewObjectHandler(internalpayment.MarkPaymentCompleted))
 	srv = srv.Bind(paymentVirtualObject)
 
 	// Bind ShippingService as a Virtual Object
@@ -155,11 +161,76 @@ func startWebUIAndAPI() error {
 
 	// API
 	mux.HandleFunc("/api/checkout", handleCheckout)
-	mux.HandleFunc("/api/orders/", handleGetOrderStatus)
+	mux.HandleFunc("/api/orders", handleOrdersList)
+	mux.HandleFunc("/api/orders/", handleOrders)
 	mux.HandleFunc("/api/merchants/", handleGetMerchantItems)
+	mux.HandleFunc("/api/debug/fix-orders", handleFixOrders)
 
 	log.Println("Web UI available on :3000 (serving ./web)")
 	return http.ListenAndServe(":3000", withCORS(mux))
+}
+
+// GET /api/orders → list recent orders with payment + items
+func handleOrdersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if postgres.DB == nil {
+		http.Error(w, "db unavailable", http.StatusInternalServerError)
+		return
+	}
+	rows, err := postgres.DB.Query(`
+        SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.updated_at,
+               COALESCE(p.status,''), COALESCE(p.invoice_url,''),
+               COALESCE(oi.items_json,'[]')
+        FROM orders o
+        LEFT JOIN payments p ON p.id = o.payment_id
+        LEFT JOIN (
+          SELECT oi.order_id,
+                 json_agg(
+                   json_build_object(
+                     'product_id', oi.item_id,
+                     'name', COALESCE(NULLIF(oi.name, ''), mi.name, oi.item_id),
+                     'quantity', oi.quantity,
+                     'unit_price', oi.unit_price
+                   )
+                 ) AS items_json
+          FROM order_items oi
+          LEFT JOIN merchant_items mi ON mi.merchant_id = oi.merchant_id AND mi.item_id = oi.item_id
+          GROUP BY oi.order_id
+        ) oi ON oi.order_id = o.id
+        ORDER BY o.updated_at DESC
+        LIMIT 50`)
+	if err != nil {
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var list []map[string]any
+	for rows.Next() {
+		var id, customerID, status, paymentID, updatedAt string
+		var totalAmount sql.NullFloat64
+		var payStatus, invoiceURL, itemsJSON string
+		if err := rows.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &updatedAt, &payStatus, &invoiceURL, &itemsJSON); err != nil {
+			continue
+		}
+		var items any
+		_ = json.Unmarshal([]byte(itemsJSON), &items)
+		list = append(list, map[string]any{
+			"id":             id,
+			"customer_id":    customerID,
+			"status":         status,
+			"total_amount":   totalAmount.Float64,
+			"payment_id":     paymentID,
+			"payment_status": payStatus,
+			"invoice_url":    invoiceURL,
+			"updated_at":     updatedAt,
+			"items":          items,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"orders": list})
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -199,6 +270,7 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 		"merchant_id": req.MerchantID,
 	}
 	inBytes, _ := json.Marshal(in)
+	log.Printf("[DEBUG] Checkout request data: %s", string(inBytes))
 
 	// Call Restate runtime HTTP endpoint directly
 	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
@@ -222,30 +294,127 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Decode response from Restate to bubble up invoice_url
+	var wfResp map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&wfResp)
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"order_id": orderID})
+	_ = json.NewEncoder(w).Encode(map[string]any{"order_id": orderID, "invoice_url": wfResp["invoice_url"]})
 }
 
-func handleGetOrderStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	// /api/orders/{id}
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/orders/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
+func handleOrders(w http.ResponseWriter, r *http.Request) {
+	// Routes:
+	// GET  /api/orders/{id}
+	// POST /api/orders/{id}/simulate_payment_success
+	path := strings.TrimPrefix(r.URL.Path, "/api/orders/")
+	if path == "" {
 		http.Error(w, "order id required", http.StatusBadRequest)
 		return
 	}
-	orderID := parts[0]
 
-	resp, err := getOrderFromDB(orderID)
-	if err != nil {
-		http.Error(w, "order not found or DB unavailable", http.StatusNotFound)
+	// Handle simulate_payment_success endpoint
+	if strings.HasSuffix(path, "/simulate_payment_success") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/simulate_payment_success")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+		// Lookup payment_id from DB
+		info, err := getOrderFromDB(orderID)
+		if err != nil {
+			http.Error(w, "order not found", http.StatusNotFound)
+			return
+		}
+		orderMap, _ := info["order"].(map[string]any)
+		paymentID, _ := orderMap["payment_id"].(string)
+		if paymentID == "" {
+			// Fallback: find latest payment by order_id
+			if postgres.DB != nil {
+				row := postgres.DB.QueryRow(`SELECT id FROM payments WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1`, orderID)
+				var pid string
+				if err := row.Scan(&pid); err == nil && pid != "" {
+					paymentID = pid
+				}
+			}
+			if paymentID == "" {
+				http.Error(w, "payment_id not set", http.StatusBadRequest)
+				return
+			}
+		}
+
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		// Mark payment completed
+		payURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentCompleted", runtimeURL, paymentID)
+		if err := postJSON(payURL, map[string]any{"payment_id": paymentID, "order_id": orderID}); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to mark payment completed", "detail": err.Error(), "payment_id": paymentID})
+			return
+		}
+
+		// Get the awakeable ID from the database
+		var awakeableID string
+		if postgres.DB != nil {
+			row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
+			if err := row.Scan(&awakeableID); err != nil {
+				log.Printf("[DEBUG] Failed to get awakeable ID for order %s: %v", orderID, err)
+			}
+		}
+
+		if awakeableID != "" {
+			// Resolve the awakeable using Restate's built-in awakeable resolution API
+			awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID)
+			// Send a simple string value, not a JSON object
+			awakeableBody := "payment_completed"
+			awakeableBytes := []byte(fmt.Sprintf(`"%s"`, awakeableBody))
+
+			awakeableResp, err := http.Post(awakeableURL, "application/json", bytes.NewReader(awakeableBytes))
+			if err != nil {
+				log.Printf("[DEBUG] Failed to resolve awakeable: %v", err)
+			} else {
+				defer awakeableResp.Body.Close()
+				if awakeableResp.StatusCode >= 200 && awakeableResp.StatusCode < 300 {
+					log.Printf("[DEBUG] Successfully resolved awakeable %s for order %s", awakeableID, orderID)
+				} else {
+					log.Printf("[DEBUG] Failed to resolve awakeable, status: %d", awakeableResp.StatusCode)
+				}
+			}
+		} else {
+			log.Printf("[DEBUG] No awakeable ID found for order %s", orderID)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+
+	// Handle GET request for individual order
+	if r.Method == http.MethodGet {
+		orderID := path
+		resp, err := getOrderFromDB(orderID)
+		if err != nil {
+			http.Error(w, "order not found or DB unavailable", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+func postJSON(url string, body map[string]any) error {
+	b, _ := json.Marshal(body)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func getOrderFromDB(orderID string) (map[string]any, error) {
@@ -254,18 +423,26 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 	}
 
 	row := postgres.DB.QueryRow(`
-		SELECT id, customer_id, status, total_amount, payment_id, shipment_id, tracking_number, updated_at
-		FROM orders WHERE id = $1
+		SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
+		       COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
+		FROM orders o
+		LEFT JOIN payments p ON p.id = o.payment_id
+		WHERE o.id = $1
 	`, orderID)
 
 	var (
-		id, customerID, status, paymentID, shipmentID, trackingNumber string
-		totalAmount                                                    sql.NullFloat64
-		updatedAt                                                      string
+		id, customerID, status, paymentID string
+		shipmentID, trackingNumber        sql.NullString
+		totalAmount                       sql.NullFloat64
+		updatedAt                         string
+		paymentStatus                     string
+		invoiceURL                        string
 	)
-	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &shipmentID, &trackingNumber, &updatedAt); err != nil {
+	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &shipmentID, &trackingNumber, &updatedAt, &paymentStatus, &invoiceURL); err != nil {
+		log.Printf("[DEBUG] getOrderFromDB failed for order %s: %v", orderID, err)
 		return nil, err
 	}
+	log.Printf("[DEBUG] getOrderFromDB found order %s: customer=%s, status=%s, payment_id=%s", id, customerID, status, paymentID)
 	return map[string]any{
 		"order": map[string]any{
 			"id":              id,
@@ -273,9 +450,13 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 			"status":          status,
 			"total_amount":    totalAmount.Float64,
 			"payment_id":      paymentID,
-			"shipment_id":     shipmentID,
-			"tracking_number": trackingNumber,
+			"shipment_id":     shipmentID.String,
+			"tracking_number": trackingNumber.String,
 			"updated_at":      updatedAt,
+		},
+		"payment": map[string]any{
+			"status":      paymentStatus,
+			"invoice_url": invoiceURL,
 		},
 	}, nil
 }
@@ -285,7 +466,7 @@ func handleGetMerchantItems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// /api/merchants/{merchant_id}/items
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/merchants/"), "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] != "items" {
@@ -334,4 +515,32 @@ func handleGetMerchantItems(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func handleFixOrders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if postgres.DB == nil {
+		http.Error(w, "db unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// Update order_items that have empty item_id or name
+	// This fixes orders that were created before merchant_items data was available
+	_, err := postgres.DB.Exec(`
+		UPDATE order_items 
+		SET item_id = 'i_001', 
+		    name = 'Apple',
+		    merchant_id = 'm_001'
+		WHERE item_id = '' OR name = ''
+	`)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to fix orders: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"message": "Orders fixed successfully"})
 }
