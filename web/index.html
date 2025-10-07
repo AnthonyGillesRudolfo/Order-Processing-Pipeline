@@ -9,6 +9,7 @@
 <body>
   <div class="container">
     <h1>Order Pipeline Test</h1>
+    
 
     <section>
       <h2>Products</h2>
@@ -38,12 +39,9 @@
       </div>
     </section>
 
-    <section id="order-section" class="hidden">
-      <h2>Order</h2>
-      <div>Order ID: <code id="order-id"></code></div>
-      <div>Status: <span id="order-status"></span></div>
-      <div>Tracking: <span id="order-tracking"></span></div>
-      <pre id="order-json"></pre>
+    <section>
+      <h2>Orders</h2>
+      <div id="orders-list"></div>
     </section>
   </div>
 
@@ -54,8 +52,6 @@
       <div class="modal-actions"><button id="modal-close">OK</button></div>
     </div>
   </div>
-  <script src="/static/app.js"></script>
-
   <script src="/static/app.js"></script>
 </body>
 </html>

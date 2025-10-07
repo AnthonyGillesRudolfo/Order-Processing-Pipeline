@@ -14,6 +14,8 @@ import (
 // PaymentServiceClient is the client API for order.sv1.PaymentService service.
 type PaymentServiceClient interface {
 	ProcessPayment(opts ...sdk_go.ClientOption) sdk_go.Client[*ProcessPaymentRequest, *ProcessPaymentResponse]
+	// Simulate marking a payment as completed (no real capture). Idempotent.
+	MarkPaymentCompleted(opts ...sdk_go.ClientOption) sdk_go.Client[*MarkPaymentCompletedRequest, *MarkPaymentCompletedResponse]
 }
 
 type paymentServiceClient struct {
@@ -36,11 +38,21 @@ func (c *paymentServiceClient) ProcessPayment(opts ...sdk_go.ClientOption) sdk_g
 	return sdk_go.WithRequestType[*ProcessPaymentRequest](sdk_go.Service[*ProcessPaymentResponse](c.ctx, "order.sv1.PaymentService", "ProcessPayment", cOpts...))
 }
 
+func (c *paymentServiceClient) MarkPaymentCompleted(opts ...sdk_go.ClientOption) sdk_go.Client[*MarkPaymentCompletedRequest, *MarkPaymentCompletedResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*MarkPaymentCompletedRequest](sdk_go.Service[*MarkPaymentCompletedResponse](c.ctx, "order.sv1.PaymentService", "MarkPaymentCompleted", cOpts...))
+}
+
 // PaymentServiceServer is the server API for order.sv1.PaymentService service.
 // All implementations should embed UnimplementedPaymentServiceServer
 // for forward compatibility.
 type PaymentServiceServer interface {
 	ProcessPayment(ctx sdk_go.Context, req *ProcessPaymentRequest) (*ProcessPaymentResponse, error)
+	// Simulate marking a payment as completed (no real capture). Idempotent.
+	MarkPaymentCompleted(ctx sdk_go.Context, req *MarkPaymentCompletedRequest) (*MarkPaymentCompletedResponse, error)
 }
 
 // UnimplementedPaymentServiceServer should be embedded to have
@@ -52,6 +64,9 @@ type UnimplementedPaymentServiceServer struct{}
 
 func (UnimplementedPaymentServiceServer) ProcessPayment(ctx sdk_go.Context, req *ProcessPaymentRequest) (*ProcessPaymentResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method ProcessPayment not implemented"), 501)
+}
+func (UnimplementedPaymentServiceServer) MarkPaymentCompleted(ctx sdk_go.Context, req *MarkPaymentCompletedRequest) (*MarkPaymentCompletedResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method MarkPaymentCompleted not implemented"), 501)
 }
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue() {}
 
@@ -73,5 +88,6 @@ func NewPaymentServiceServer(srv PaymentServiceServer, opts ...sdk_go.ServiceDef
 	sOpts := append([]sdk_go.ServiceDefinitionOption{sdk_go.WithProtoJSON}, opts...)
 	router := sdk_go.NewService("order.sv1.PaymentService", sOpts...)
 	router = router.Handler("ProcessPayment", sdk_go.NewServiceHandler(srv.ProcessPayment))
+	router = router.Handler("MarkPaymentCompleted", sdk_go.NewServiceHandler(srv.MarkPaymentCompleted))
 	return router
 }

@@ -28,6 +28,8 @@ message CreateOrderRequest {
 
 message CreateOrderResponse {
   string order_id = 1;
+  // Optional invoice URL when payment is initiated via Xendit
+  string invoice_url = 2;
 }
 
 message GetOrderRequest {
@@ -70,4 +72,14 @@ service OrderService {
   rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
   rpc UpdateOrderStatus(UpdateOrderStatusRequest) returns (UpdateOrderStatusResponse);
+  // Continue the order after payment is marked completed
+  rpc ContinueAfterPayment(ContinueAfterPaymentRequest) returns (ContinueAfterPaymentResponse);
+}
+
+message ContinueAfterPaymentRequest {
+  string order_id = 1;
+}
+
+message ContinueAfterPaymentResponse {
+  bool ok = 1;
 }

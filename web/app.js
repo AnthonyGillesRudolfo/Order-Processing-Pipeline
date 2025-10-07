@@ -13,11 +13,7 @@ let currentMerchantId = 'm_001'; // Default merchant
   const merchantSelect = $('#merchant-select');
   const refreshProductsBtn = $('#refresh-products');
   
-  const orderSection = $('#order-section');
-  const orderIdEl = $('#order-id');
-  const orderStatusEl = $('#order-status');
-  const orderTrackingEl = $('#order-tracking');
-  const orderJsonEl = $('#order-json');
+  const ordersListEl = document.getElementById('orders-list');
 
     // Tambahkan setelah deklarasi elemen DOM
     const modalEl = document.getElementById('modal');
@@ -46,7 +42,7 @@ let currentMerchantId = 'm_001'; // Default merchant
         <button ${p.quantity <= 0 ? 'disabled' : ''}>Add to basket</button>
       `;
       if (p.quantity > 0) {
-        card.querySelector('button').onclick = () => addToBasket(p.item_id);
+        card.querySelector('button').onclick = () => addToBasket(p.itemId);
       }
       productsEl.appendChild(card);
     });
@@ -66,7 +62,7 @@ let currentMerchantId = 'm_001'; // Default merchant
   
     basketBodyEl.innerHTML = '';
     items.forEach(([pid, qty]) => {
-      const p = PRODUCTS.find(pp => pp.item_id === pid);
+      const p = PRODUCTS.find(pp => pp.itemId === pid);
       if (!p) return; // Skip if product not found
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -124,15 +120,19 @@ let currentMerchantId = 'm_001'; // Default merchant
         return;
       }
   
-      const { order_id } = await res.json();
-      orderSection.classList.remove('hidden');
-      orderIdEl.textContent = order_id;
+      const { order_id, invoice_url } = await res.json();
       basket.clear();
       renderBasket();
   
-      // Update popup ke sukses + info order id
-      showModal('Order processed', `Invocation success.<br/>Order ID: <code>${order_id}</code><br/>Status akan otomatis dipantau.`);
-      pollOrder(order_id);
+      // Popup + invoice link
+      if (invoice_url) showModal('Order processed', `Invocation success.<br/>Order ID: <code>${order_id}</code><br/>Invoice: <a href="${invoice_url}" target="_blank" rel="noopener">open</a>`);
+      else showModal('Order processed', `Invocation success.<br/>Order ID: <code>${order_id}</code>`);
+      // Persist so order survives refresh
+      try {
+        localStorage.setItem('last_order_id', order_id);
+        if (invoice_url) localStorage.setItem('last_invoice_url', invoice_url);
+      } catch {}
+      await loadOrders();
     } catch (e) {
       showModal('Network error', String(e));
     } finally {
@@ -140,32 +140,7 @@ let currentMerchantId = 'm_001'; // Default merchant
     }
   }
   
-  async function pollOrder(orderId) {
-    let lastStatus = '';
-    const update = async () => {
-      const res = await fetch(`/api/orders/${orderId}`);
-      if (!res.ok) return setTimeout(update, 2000);
-      const data = await res.json();
-      const order = data.order || {};
-      orderStatusEl.textContent = order.status || 'UNKNOWN';
-      orderTrackingEl.textContent = order.tracking_number || '-';
-      orderJsonEl.textContent = JSON.stringify(data, null, 2);
-  
-      if (order.status && order.status !== lastStatus) {
-        lastStatus = order.status;
-        if (lastStatus === 'DELIVERED') {
-          showModal('Order delivered', `Status: <b>DELIVERED</b><br/>Tracking: <code>${order.tracking_number || '-'}</code>`);
-        } else if (lastStatus === 'CANCELLED') {
-          showModal('Order cancelled', 'Status: <b>CANCELLED</b>');
-        }
-      }
-  
-      if (order.status !== 'DELIVERED' && order.status !== 'CANCELLED') {
-        setTimeout(update, 2000);
-      }
-    };
-    update();
-  }
+  // Remove per-order polling; we list all orders instead
   
   async function loadProducts() {
     try {
@@ -202,3 +177,50 @@ let currentMerchantId = 'm_001'; // Default merchant
   // Load products and initialize
   loadProducts();
   renderBasket();
+  loadOrders();
+
+  async function loadOrders() {
+    try {
+      const res = await fetch('/api/orders');
+      if (!res.ok) return;
+      const data = await res.json();
+      const orders = data.orders || [];
+      ordersListEl.innerHTML = '';
+      orders.forEach(o => {
+        const div = document.createElement('div');
+        div.className = 'order-card';
+        const items = (o.items || []).map(it => `${(it.name || it.product_id)} x${it.quantity}`).join(', ');
+        const inv = o.invoice_url ? `<a href="${o.invoice_url}" target="_blank" rel="noopener">invoice</a>` : '-';
+        const confirmBtn = (o.payment_status || '').toUpperCase() === 'PAYMENT_PENDING'
+          ? `<button class="confirm-paid" data-order="${o.id}">Confirm Payment</button>`
+          : '';
+        div.innerHTML = `
+          <div><b>ID</b>: <code>${o.id}</code></div>
+          <div><b>Status</b>: ${o.status} | <b>Payment</b>: ${o.payment_status || '-'}</div>
+          <div><b>Items</b>: ${items || '-'}</div>
+          <div><b>Invoice</b>: ${inv} ${confirmBtn}</div>
+        `;
+        ordersListEl.appendChild(div);
+      });
+      // Wire confirm buttons
+      document.querySelectorAll('.confirm-paid').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const orderId = e.target.getAttribute('data-order');
+          try {
+            const res = await fetch(`/api/orders/${orderId}/simulate_payment_success`, { method: 'POST' });
+            if (!res.ok) {
+              let detail = '';
+              try { const j = await res.json(); detail = j.detail || j.error || JSON.stringify(j); } catch { try { detail = await res.text(); } catch {} }
+              throw new Error(detail || `HTTP ${res.status}`);
+            }
+            showModal('Payment simulated', `Order <code>${orderId}</code> will continue to shipping.`);
+            await loadOrders();
+          } catch (err) {
+            showModal('Error', String(err));
+          }
+        });
+      });
+    } catch {}
+  }
+
+  // No per-order resume needed; orders list shows all

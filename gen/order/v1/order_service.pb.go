@@ -211,8 +211,10 @@ func (x *CreateOrderRequest) GetMerchantId() string {
 }
 
 type CreateOrderResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	OrderId string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	// Optional invoice URL when payment is initiated via Xendit
+	InvoiceUrl    string `protobuf:"bytes,2,opt,name=invoice_url,json=invoiceUrl,proto3" json:"invoice_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -250,6 +252,13 @@ func (*CreateOrderResponse) Descriptor() ([]byte, []int) {
 func (x *CreateOrderResponse) GetOrderId() string {
 	if x != nil {
 		return x.OrderId
+	}
+	return ""
+}
+
+func (x *CreateOrderResponse) GetInvoiceUrl() string {
+	if x != nil {
+		return x.InvoiceUrl
 	}
 	return ""
 }
@@ -614,6 +623,94 @@ func (x *UpdateOrderStatusResponse) GetMessage() string {
 	return ""
 }
 
+type ContinueAfterPaymentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContinueAfterPaymentRequest) Reset() {
+	*x = ContinueAfterPaymentRequest{}
+	mi := &file_order_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContinueAfterPaymentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContinueAfterPaymentRequest) ProtoMessage() {}
+
+func (x *ContinueAfterPaymentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_order_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContinueAfterPaymentRequest.ProtoReflect.Descriptor instead.
+func (*ContinueAfterPaymentRequest) Descriptor() ([]byte, []int) {
+	return file_order_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ContinueAfterPaymentRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+type ContinueAfterPaymentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ContinueAfterPaymentResponse) Reset() {
+	*x = ContinueAfterPaymentResponse{}
+	mi := &file_order_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ContinueAfterPaymentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ContinueAfterPaymentResponse) ProtoMessage() {}
+
+func (x *ContinueAfterPaymentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_order_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ContinueAfterPaymentResponse.ProtoReflect.Descriptor instead.
+func (*ContinueAfterPaymentResponse) Descriptor() ([]byte, []int) {
+	return file_order_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ContinueAfterPaymentResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 var File_order_service_proto protoreflect.FileDescriptor
 
 const file_order_service_proto_rawDesc = "" +
@@ -637,9 +734,11 @@ const file_order_service_proto_rawDesc = "" +
 	"customerId\x12+\n" +
 	"\x05items\x18\x02 \x03(\v2\x15.order.sv1.OrderItemsR\x05items\x12\x1f\n" +
 	"\vmerchant_id\x18\x03 \x01(\tR\n" +
-	"merchantId\"0\n" +
+	"merchantId\"Q\n" +
 	"\x13CreateOrderResponse\x12\x19\n" +
-	"\border_id\x18\x01 \x01(\tR\aorderId\",\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x1f\n" +
+	"\vinvoice_url\x18\x02 \x01(\tR\n" +
+	"invoiceUrl\",\n" +
 	"\x0fGetOrderRequest\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\"\x9d\x01\n" +
 	"\vPaymentInfo\x12\x1d\n" +
@@ -665,11 +764,16 @@ const file_order_service_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\x0e2\x16.order.sv1.OrderStatusR\x06status\"O\n" +
 	"\x19UpdateOrderStatusResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage2\x81\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"8\n" +
+	"\x1bContinueAfterPaymentRequest\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\".\n" +
+	"\x1cContinueAfterPaymentResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xea\x02\n" +
 	"\fOrderService\x12L\n" +
 	"\vCreateOrder\x12\x1d.order.sv1.CreateOrderRequest\x1a\x1e.order.sv1.CreateOrderResponse\x12C\n" +
 	"\bGetOrder\x12\x1a.order.sv1.GetOrderRequest\x1a\x1b.order.sv1.GetOrderResponse\x12^\n" +
-	"\x11UpdateOrderStatus\x12#.order.sv1.UpdateOrderStatusRequest\x1a$.order.sv1.UpdateOrderStatusResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
+	"\x11UpdateOrderStatus\x12#.order.sv1.UpdateOrderStatusRequest\x1a$.order.sv1.UpdateOrderStatusResponse\x12g\n" +
+	"\x14ContinueAfterPayment\x12&.order.sv1.ContinueAfterPaymentRequest\x1a'.order.sv1.ContinueAfterPaymentResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
 
 var (
 	file_order_service_proto_rawDescOnce sync.Once
@@ -683,40 +787,44 @@ func file_order_service_proto_rawDescGZIP() []byte {
 	return file_order_service_proto_rawDescData
 }
 
-var file_order_service_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_order_service_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_order_service_proto_goTypes = []any{
-	(*Order)(nil),                     // 0: order.sv1.Order
-	(*OrderItems)(nil),                // 1: order.sv1.OrderItems
-	(*CreateOrderRequest)(nil),        // 2: order.sv1.CreateOrderRequest
-	(*CreateOrderResponse)(nil),       // 3: order.sv1.CreateOrderResponse
-	(*GetOrderRequest)(nil),           // 4: order.sv1.GetOrderRequest
-	(*PaymentInfo)(nil),               // 5: order.sv1.PaymentInfo
-	(*ShipmentInfo)(nil),              // 6: order.sv1.ShipmentInfo
-	(*GetOrderResponse)(nil),          // 7: order.sv1.GetOrderResponse
-	(*UpdateOrderStatusRequest)(nil),  // 8: order.sv1.UpdateOrderStatusRequest
-	(*UpdateOrderStatusResponse)(nil), // 9: order.sv1.UpdateOrderStatusResponse
-	(OrderStatus)(0),                  // 10: order.sv1.OrderStatus
-	(PaymentStatus)(0),                // 11: order.sv1.PaymentStatus
-	(ShipmentStatus)(0),               // 12: order.sv1.ShipmentStatus
+	(*Order)(nil),                        // 0: order.sv1.Order
+	(*OrderItems)(nil),                   // 1: order.sv1.OrderItems
+	(*CreateOrderRequest)(nil),           // 2: order.sv1.CreateOrderRequest
+	(*CreateOrderResponse)(nil),          // 3: order.sv1.CreateOrderResponse
+	(*GetOrderRequest)(nil),              // 4: order.sv1.GetOrderRequest
+	(*PaymentInfo)(nil),                  // 5: order.sv1.PaymentInfo
+	(*ShipmentInfo)(nil),                 // 6: order.sv1.ShipmentInfo
+	(*GetOrderResponse)(nil),             // 7: order.sv1.GetOrderResponse
+	(*UpdateOrderStatusRequest)(nil),     // 8: order.sv1.UpdateOrderStatusRequest
+	(*UpdateOrderStatusResponse)(nil),    // 9: order.sv1.UpdateOrderStatusResponse
+	(*ContinueAfterPaymentRequest)(nil),  // 10: order.sv1.ContinueAfterPaymentRequest
+	(*ContinueAfterPaymentResponse)(nil), // 11: order.sv1.ContinueAfterPaymentResponse
+	(OrderStatus)(0),                     // 12: order.sv1.OrderStatus
+	(PaymentStatus)(0),                   // 13: order.sv1.PaymentStatus
+	(ShipmentStatus)(0),                  // 14: order.sv1.ShipmentStatus
 }
 var file_order_service_proto_depIdxs = []int32{
 	1,  // 0: order.sv1.Order.items:type_name -> order.sv1.OrderItems
-	10, // 1: order.sv1.Order.status:type_name -> order.sv1.OrderStatus
+	12, // 1: order.sv1.Order.status:type_name -> order.sv1.OrderStatus
 	1,  // 2: order.sv1.CreateOrderRequest.items:type_name -> order.sv1.OrderItems
-	11, // 3: order.sv1.PaymentInfo.status:type_name -> order.sv1.PaymentStatus
-	12, // 4: order.sv1.ShipmentInfo.status:type_name -> order.sv1.ShipmentStatus
+	13, // 3: order.sv1.PaymentInfo.status:type_name -> order.sv1.PaymentStatus
+	14, // 4: order.sv1.ShipmentInfo.status:type_name -> order.sv1.ShipmentStatus
 	0,  // 5: order.sv1.GetOrderResponse.order:type_name -> order.sv1.Order
 	5,  // 6: order.sv1.GetOrderResponse.payment_info:type_name -> order.sv1.PaymentInfo
 	6,  // 7: order.sv1.GetOrderResponse.shipment_info:type_name -> order.sv1.ShipmentInfo
-	10, // 8: order.sv1.UpdateOrderStatusRequest.status:type_name -> order.sv1.OrderStatus
+	12, // 8: order.sv1.UpdateOrderStatusRequest.status:type_name -> order.sv1.OrderStatus
 	2,  // 9: order.sv1.OrderService.CreateOrder:input_type -> order.sv1.CreateOrderRequest
 	4,  // 10: order.sv1.OrderService.GetOrder:input_type -> order.sv1.GetOrderRequest
 	8,  // 11: order.sv1.OrderService.UpdateOrderStatus:input_type -> order.sv1.UpdateOrderStatusRequest
-	3,  // 12: order.sv1.OrderService.CreateOrder:output_type -> order.sv1.CreateOrderResponse
-	7,  // 13: order.sv1.OrderService.GetOrder:output_type -> order.sv1.GetOrderResponse
-	9,  // 14: order.sv1.OrderService.UpdateOrderStatus:output_type -> order.sv1.UpdateOrderStatusResponse
-	12, // [12:15] is the sub-list for method output_type
-	9,  // [9:12] is the sub-list for method input_type
+	10, // 12: order.sv1.OrderService.ContinueAfterPayment:input_type -> order.sv1.ContinueAfterPaymentRequest
+	3,  // 13: order.sv1.OrderService.CreateOrder:output_type -> order.sv1.CreateOrderResponse
+	7,  // 14: order.sv1.OrderService.GetOrder:output_type -> order.sv1.GetOrderResponse
+	9,  // 15: order.sv1.OrderService.UpdateOrderStatus:output_type -> order.sv1.UpdateOrderStatusResponse
+	11, // 16: order.sv1.OrderService.ContinueAfterPayment:output_type -> order.sv1.ContinueAfterPaymentResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
 	9,  // [9:9] is the sub-list for extension type_name
 	9,  // [9:9] is the sub-list for extension extendee
 	0,  // [0:9] is the sub-list for field type_name
@@ -734,7 +842,7 @@ func file_order_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_order_service_proto_rawDesc), len(file_order_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

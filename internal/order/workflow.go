@@ -3,10 +3,7 @@ package order
 import (
 	"fmt"
 	"log"
-	"math/rand"
 	"time"
-
-	"github.com/google/uuid"
 
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	restate "github.com/restatedev/sdk-go"
@@ -18,7 +15,7 @@ import (
 // CreateOrder orchestrates the order process
 func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (*orderpb.CreateOrderResponse, error) {
 	orderId := restate.Key(ctx)
-    log.Printf("[Workflow %s] Creating order for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
+	log.Printf("[Workflow %s] Creating order for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
 
 	var totalAmount float64
 	for _, item := range req.Items {
@@ -26,26 +23,28 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 		totalAmount += float64(item.Quantity) * 1
 	}
 
-    restate.Set(ctx, "customer_id", req.CustomerId)
+	restate.Set(ctx, "customer_id", req.CustomerId)
 	restate.Set(ctx, "status", orderpb.OrderStatus_PENDING)
 	restate.Set(ctx, "total_amount", totalAmount)
-    if req.MerchantId != "" { restate.Set(ctx, "merchant_id", req.MerchantId) }
+	if req.MerchantId != "" {
+		restate.Set(ctx, "merchant_id", req.MerchantId)
+	}
 
-    _, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-        log.Printf("[Workflow %s] Persisting order and items to database", orderId)
-        if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil { return nil, err }
-        return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
-    })
+	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		log.Printf("[Workflow %s] Persisting order and items to database", orderId)
+		if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
+			return nil, err
+		}
+		return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to persist order to database: %w", err)
 	}
 
-	log.Printf("[Workflow %s] Order is PENDING - simulating payment processing delay (5 seconds)", orderId)
-	if err := restate.Sleep(ctx, 5*time.Second); err != nil {
-		return nil, fmt.Errorf("sleep interrupted: %w", err)
-	}
+	// No artificial delay; proceed to creating payment and invoice
 
-	paymentId := uuid.New().String()
+	// Use Restate's deterministic random for payment ID to ensure workflow determinism
+	paymentId := restate.Rand(ctx).UUID().String()
 	paymentReq := &orderpb.ProcessPaymentRequest{
 		OrderId: orderId,
 		PaymentMethod: &orderpb.PaymentMethod{
@@ -61,37 +60,94 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 	paymentResp, err := paymentClient.Request(paymentReq)
 	if err != nil {
 		restate.Set(ctx, "status", orderpb.OrderStatus_CANCELLED)
-		_, _ = restate.Run(ctx, func(ctx restate.RunContext) (any, error) { return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_CANCELLED) })
+		_, _ = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_CANCELLED)
+		})
 		return nil, fmt.Errorf("payment failed: %w", err)
 	}
 
-	log.Printf("[Workflow %s] Payment completed: %s", orderId, paymentResp.PaymentId)
+	log.Printf("[Workflow %s] Payment initiated: %s", orderId, paymentResp.PaymentId)
 	restate.Set(ctx, "payment_id", paymentResp.PaymentId)
 	restate.Set(ctx, "payment_status", paymentResp.Status)
-	restate.Set(ctx, "status", orderpb.OrderStatus_PROCESSING)
-
-	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		if err := postgres.UpdateOrderPayment(orderId, paymentResp.PaymentId); err != nil { return nil, err }
-		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_PROCESSING)
-	})
-	if err != nil { log.Printf("[Workflow %s] Warning: Failed to update payment in database: %v", orderId, err) }
-
-	log.Printf("[Workflow %s] Order is PROCESSING - preparing shipment (5 second delay)", orderId)
-	if err := restate.Sleep(ctx, 5*time.Second); err != nil { return nil, fmt.Errorf("sleep interrupted: %w", err) }
-
-	shipmentId := uuid.New().String()
-	shipmentReq := &orderpb.CreateShipmentRequest{
-		OrderId: orderId,
-		ShippingAddress: &orderpb.ShippingAddress{Street: "123 Main St", City: "San Francisco", State: "CA", PostalCode: "94105", Country: "USA", RecipientName: "Customer"},
-		ShippingMethod: &orderpb.ShippingMethod{Carrier: "FedEx", ServiceType: "Ground", Cost: 15.0, EstimatedDays: 5},
+	if paymentResp.InvoiceUrl != "" {
+		restate.Set(ctx, "invoice_url", paymentResp.InvoiceUrl)
 	}
 
-	log.Printf("[Workflow %s] Step 3: Creating shipment", orderId)
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		if err := postgres.UpdateOrderPayment(orderId, paymentResp.PaymentId); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update payment in database: %v", orderId, err)
+	}
+
+	// Set order status to PENDING and wait for payment completion
+	restate.Set(ctx, "status", orderpb.OrderStatus_PENDING)
+	log.Printf("[Workflow %s] Order created successfully, payment pending", orderId)
+
+	// Create an awakeable to wait for payment completion signal
+	// This is the proper Restate pattern for waiting for external events
+	log.Printf("[Workflow %s] Waiting for payment completion using awakeable...", orderId)
+	awakeable := restate.Awakeable[any](ctx)
+	awakeableId := awakeable.Id()
+	restate.Set(ctx, "payment_awakeable_id", awakeableId)
+
+	// Store the awakeable ID in the database so the API endpoint can access it
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		// Store awakeable ID in orders table (we need to add this column)
+		_, err := postgres.DB.Exec(`UPDATE orders SET awakeable_id = $1 WHERE id = $2`, awakeableId, orderId)
+		return nil, err
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to store awakeable ID in database: %v", orderId, err)
+	}
+	log.Printf("[Workflow %s] Awakeable ID stored: %s", orderId, awakeableId)
+
+	// Wait for the awakeable to be resolved (payment completion signal)
+	result, err := awakeable.Result()
+	if err != nil {
+		log.Printf("[Workflow %s] Awakeable failed: %v", orderId, err)
+		return nil, fmt.Errorf("payment completion failed: %w", err)
+	}
+	log.Printf("[Workflow %s] Payment completion signal received: %v", orderId, result)
+
+	// After sleep interruption (payment completion), continue to shipping
+	log.Printf("[Workflow %s] Payment completed, proceeding to shipping", orderId)
+
+	// Mark order as PROCESSING (payment completed)
+	restate.Set(ctx, "status", orderpb.OrderStatus_PROCESSING)
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_PROCESSING)
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to set PROCESSING: %v", orderId, err)
+	}
+
+	// Proceed to shipment
+	if err := restate.Sleep(ctx, 5*time.Second); err != nil {
+		return nil, err
+	}
+	// Use Restate's deterministic random for shipment ID to ensure workflow determinism
+	shipmentId := restate.Rand(ctx).UUID().String()
+	shipmentReq := &orderpb.CreateShipmentRequest{
+		OrderId: orderId,
+		ShippingAddress: &orderpb.ShippingAddress{
+			Street: "123 Main St", City: "San Francisco", State: "CA",
+			PostalCode: "94105", Country: "USA", RecipientName: "Customer",
+		},
+		ShippingMethod: &orderpb.ShippingMethod{
+			Carrier: "FedEx", ServiceType: "Ground", Cost: 15.0, EstimatedDays: 5,
+		},
+	}
+	log.Printf("[Workflow %s] Creating shipment after payment", orderId)
 	shippingClient := restate.Object[*orderpb.CreateShipmentResponse](ctx, "order.sv1.ShippingService", shipmentId, "CreateShipment", restate.WithProtoJSON)
 	shipmentResp, err := shippingClient.Request(shipmentReq)
-	if err != nil { return nil, fmt.Errorf("shipment creation failed: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("shipment creation failed: %w", err)
+	}
 
-	log.Printf("[Workflow %s] Shipment created: %s", orderId, shipmentResp.ShipmentId)
 	restate.Set(ctx, "shipment_id", shipmentResp.ShipmentId)
 	restate.Set(ctx, "tracking_number", shipmentResp.TrackingNumber)
 	restate.Set(ctx, "estimated_delivery", shipmentResp.EstimatedDelivery)
@@ -99,26 +155,29 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 	restate.Set(ctx, "status", orderpb.OrderStatus_SHIPPED)
 
 	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		if err := postgres.UpdateOrderShipment(orderId, shipmentResp.ShipmentId, shipmentResp.TrackingNumber); err != nil { return nil, err }
+		if err := postgres.UpdateOrderShipment(orderId, shipmentResp.ShipmentId, shipmentResp.TrackingNumber); err != nil {
+			return nil, err
+		}
 		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_SHIPPED)
 	})
-	if err != nil { log.Printf("[Workflow %s] Warning: Failed to update shipment in database: %v", orderId, err) }
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update shipment in database: %v", orderId, err)
+	}
 
-	log.Printf("[Workflow %s] Order is now SHIPPED and in transit", orderId)
-	log.Printf("[Workflow %s] Tracking number: %s", orderId, shipmentResp.TrackingNumber)
-
-	log.Printf("[Workflow %s] Simulating delivery time (10 second delay)", orderId)
-	if err := restate.Sleep(ctx, 10*time.Second); err != nil { return nil, fmt.Errorf("sleep interrupted: %w", err) }
-
-	log.Printf("[Workflow %s] Order has been delivered", orderId)
+	if err := restate.Sleep(ctx, 10*time.Second); err != nil {
+		return nil, err
+	}
 	restate.Set(ctx, "status", orderpb.OrderStatus_DELIVERED)
 	restate.Set(ctx, "current_location", "Delivered")
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_DELIVERED)
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update final status in database: %v", orderId, err)
+	}
 
-	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) { return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_DELIVERED) })
-	if err != nil { log.Printf("[Workflow %s] Warning: Failed to update final status in database: %v", orderId, err) }
-
-	log.Printf("[Workflow %s] Order completed successfully - Status: DELIVERED", orderId)
-	return &orderpb.CreateOrderResponse{OrderId: orderId}, nil
+	log.Printf("[Workflow %s] Order completed successfully", orderId)
+	return &orderpb.CreateOrderResponse{OrderId: orderId, InvoiceUrl: paymentResp.InvoiceUrl}, nil
 }
 
 // GetOrder retrieves comprehensive order information from workflow state
@@ -138,7 +197,9 @@ func GetOrder(ctx restate.WorkflowSharedContext, req *orderpb.GetOrderRequest) (
 	if paymentId != "" {
 		log.Printf("[Workflow %s] Retrieving payment info for payment: %s", orderId, paymentId)
 		paymentStatusVal, err := restate.Get[orderpb.PaymentStatus](ctx, "payment_status")
-		if err != nil { paymentStatusVal = orderpb.PaymentStatus_PAYMENT_COMPLETED }
+		if err != nil {
+			paymentStatusVal = orderpb.PaymentStatus_PAYMENT_COMPLETED
+		}
 		response.PaymentInfo = &orderpb.PaymentInfo{PaymentId: paymentId, Status: paymentStatusVal, Amount: totalAmount, PaymentMethod: "CREDIT_CARD"}
 	}
 
@@ -168,7 +229,9 @@ func UpdateOrderStatus(ctx restate.WorkflowContext, req *orderpb.UpdateOrderStat
 	log.Printf("[Workflow %s] Updating status to: %v", orderId, req.Status)
 
 	restate.Set(ctx, "status", req.Status)
-	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) { return nil, postgres.UpdateOrderStatusDB(orderId, req.Status) })
+	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, req.Status)
+	})
 	if err != nil {
 		log.Printf("[Workflow %s] Warning: Failed to update status in database: %v", orderId, err)
 		return &orderpb.UpdateOrderStatusResponse{Success: false, Message: fmt.Sprintf("Failed to update status in database: %v", err)}, nil
@@ -176,8 +239,27 @@ func UpdateOrderStatus(ctx restate.WorkflowContext, req *orderpb.UpdateOrderStat
 	return &orderpb.UpdateOrderStatusResponse{Success: true, Message: "Order status updated successfully"}, nil
 }
 
+// ContinueAfterPayment resumes the order once payment is completed (simulated)
+func ContinueAfterPayment(ctx restate.WorkflowContext, req *orderpb.ContinueAfterPaymentRequest) (*orderpb.ContinueAfterPaymentResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] ContinueAfterPayment invoked - resolving awakeable to continue workflow", orderId)
+
+	// Get the awakeable ID that was saved during CreateOrder
+	awakeableId, err := restate.Get[string](ctx, "payment_awakeable_id")
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to get awakeable ID: %v", orderId, err)
+		return &orderpb.ContinueAfterPaymentResponse{Ok: false}, fmt.Errorf("awakeable ID not found: %w", err)
+	}
+
+	// Resolve the awakeable to signal payment completion
+	// This will unblock the CreateOrder workflow waiting on the awakeable
+	restate.ResolveAwakeable(ctx, awakeableId, "payment_completed")
+	log.Printf("[Workflow %s] Awakeable resolved, workflow will continue", orderId)
+
+	return &orderpb.ContinueAfterPaymentResponse{Ok: true}, nil
+}
+
 // Keep a tiny server import linker reference to avoid unused import errors when building only package
 var _ = server.NewRestate
 
-// Dummy ref to rand to match original imports where used in payment; remove if unnecessary later
-var _ = rand.Intn
+// Dummy ref removed
