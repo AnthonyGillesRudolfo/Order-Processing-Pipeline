@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
@@ -530,11 +531,14 @@ func ShipOrder(ctx restate.ObjectContext, req *orderpb.ShipOrderRequest) (*order
 	// Update the database using restate.Run to ensure proper transaction handling
 	// ALL database operations must be inside restate.Run to persist properly
 	log.Printf("[Workflow %s] Updating database in restate.Run context", orderId)
+
+	// Compute an ISO-8601 date for estimated delivery to satisfy DATE column type
+	estimatedDeliveryDate := time.Now().AddDate(0, 0, 5).Format("2006-01-02")
 	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		// Create shipment record
 		if err := postgres.InsertShipment(
 			shipmentId, orderId, req.TrackingNumber, req.Carrier, req.ServiceType,
-			orderpb.ShipmentStatus_SHIPMENT_IN_TRANSIT, "Warehouse", "5-7 business days",
+			orderpb.ShipmentStatus_SHIPMENT_IN_TRANSIT, "Warehouse", estimatedDeliveryDate,
 		); err != nil {
 			log.Printf("[Workflow %s] Failed to create shipment: %v", orderId, err)
 			return nil, err
