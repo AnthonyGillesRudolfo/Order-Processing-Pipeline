@@ -39,7 +39,10 @@ let currentMerchantId = 'm_001'; // Default merchant
         <div class="title">${p.name}</div>
         <div class="price">$${p.price.toFixed(2)}</div>
         <div class="stock">Stock: ${p.quantity}</div>
-        <button ${p.quantity <= 0 ? 'disabled' : ''}>Add to basket</button>
+        <div class="card-actions">
+          <button ${p.quantity <= 0 ? 'disabled' : ''}>Add to basket</button>
+          <button onclick="editItem('${p.itemId}')" style="margin-left: 4px;">Edit</button>
+        </div>
       `;
       if (p.quantity > 0) {
         card.querySelector('button').onclick = () => addToBasket(p.itemId);
@@ -53,17 +56,25 @@ let currentMerchantId = 'm_001'; // Default merchant
     if (items.length === 0) {
       basketEmptyEl.classList.remove('hidden');
       basketTableEl.classList.add('hidden');
+      document.getElementById('total-row').classList.add('hidden');
       checkoutBtn.disabled = true;
     } else {
       basketEmptyEl.classList.add('hidden');
       basketTableEl.classList.remove('hidden');
+      document.getElementById('total-row').classList.remove('hidden');
       checkoutBtn.disabled = false;
     }
   
     basketBodyEl.innerHTML = '';
+    let totalAmount = 0;
+    
     items.forEach(([pid, qty]) => {
       const p = PRODUCTS.find(pp => pp.itemId === pid);
       if (!p) return; // Skip if product not found
+      
+      const subtotal = p.price * qty;
+      totalAmount += subtotal;
+      
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${p.name}</td>
@@ -72,6 +83,8 @@ let currentMerchantId = 'm_001'; // Default merchant
           <span class="q">${qty}</span>
           <button class="qty" data-delta="1">+</button>
         </td>
+        <td>$${p.price.toFixed(2)}</td>
+        <td>$${subtotal.toFixed(2)}</td>
         <td><button class="remove">Remove</button></td>
       `;
       tr.querySelectorAll('.qty').forEach(btn => {
@@ -80,6 +93,9 @@ let currentMerchantId = 'm_001'; // Default merchant
       tr.querySelector('.remove').onclick = () => removeFromBasket(pid);
       basketBodyEl.appendChild(tr);
     });
+    
+    // Update total
+    document.getElementById('basket-total').textContent = `$${totalAmount.toFixed(2)}`;
   }
   
   function addToBasket(pid) {
@@ -115,8 +131,22 @@ let currentMerchantId = 'm_001'; // Default merchant
   
       if (!res.ok) {
         let detail = '';
-        try { const j = await res.json(); detail = j.detail ? `<pre>${JSON.stringify(j.detail, null, 2)}</pre>` : ''; } catch {}
-        showModal('Checkout failed', `Make sure the Restate runtime is active & deployment is registered.${detail}`);
+        let errorMessage = 'Checkout failed';
+        try { 
+          const j = await res.json(); 
+          if (j.detail) {
+            detail = `<pre>${JSON.stringify(j.detail, null, 2)}</pre>`;
+            // Check if it's a stock validation error
+            if (j.detail.error && j.detail.error.includes('Insufficient stock')) {
+              errorMessage = 'Insufficient Stock';
+              detail = `<div style="color: #dc3545; font-weight: bold;">${j.detail.error}</div>`;
+            } else if (j.detail.error && j.detail.error.includes('Item') && j.detail.error.includes('not found')) {
+              errorMessage = 'Item Not Found';
+              detail = `<div style="color: #dc3545; font-weight: bold;">${j.detail.error}</div>`;
+            }
+          }
+        } catch {}
+        showModal(errorMessage, `${errorMessage === 'Checkout failed' ? 'Make sure the Restate runtime is active & deployment is registered.' : ''}${detail}`);
         return;
       }
   
@@ -196,6 +226,16 @@ let currentMerchantId = 'm_001'; // Default merchant
           <div><b>Status</b>: ${o.status} | <b>Payment</b>: ${o.payment_status || '-'}</div>
           <div><b>Items</b>: ${items || '-'}</div>
           <div><b>Invoice</b>: ${inv}</div>
+          <div class="order-actions">
+            ${o.status === 'PROCESSING' ? 
+              `<button onclick="shipOrder('${o.id}')" style="background-color: #007bff; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Ship Order (Auto-Deliver)</button>` : ''}
+            ${o.status === 'SHIPPED' ? 
+              `<span style="color: #28a745; font-weight: bold; margin-right: 8px;">In Transit...</span>` : ''}
+            ${o.status === 'PROCESSING' || o.status === 'SHIPPED' ? 
+              `<button onclick="cancelOrder('${o.id}')" style="background-color: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Cancel Order</button>` : ''}
+            ${o.status === 'DELIVERED' ? 
+              `<span style="color: #28a745; font-weight: bold;">✓ Delivered</span>` : ''}
+          </div>
         `;
         ordersListEl.appendChild(div);
       });
@@ -203,3 +243,212 @@ let currentMerchantId = 'm_001'; // Default merchant
   }
 
   // No per-order resume needed; orders list shows all
+
+  // Merchant Item Management
+  let currentEditingItem = null;
+  const itemModalEl = document.getElementById('item-modal');
+  const itemFormEl = document.getElementById('item-form');
+  const itemSaveBtn = document.getElementById('item-save-btn');
+  const itemDeleteBtn = document.getElementById('item-delete-btn');
+  const itemCancelBtn = document.getElementById('item-cancel-btn');
+  const addItemBtn = document.getElementById('add-item-btn');
+
+  function showItemModal() {
+    currentEditingItem = null;
+    itemFormEl.reset();
+    itemDeleteBtn.classList.add('hidden');
+    document.getElementById('item-modal-title').textContent = 'Add New Item';
+    itemModalEl.classList.remove('hidden');
+  }
+
+  function hideItemModal() {
+    itemModalEl.classList.add('hidden');
+    currentEditingItem = null;
+  }
+
+  function editItem(itemId) {
+    const item = PRODUCTS.find(p => p.itemId === itemId);
+    if (!item) return;
+    
+    currentEditingItem = item;
+    document.getElementById('item-id').value = item.itemId;
+    document.getElementById('item-name').value = item.name;
+    document.getElementById('item-price').value = item.price;
+    document.getElementById('item-quantity').value = item.quantity;
+    
+    document.getElementById('item-modal-title').textContent = 'Edit Item';
+    itemDeleteBtn.classList.remove('hidden');
+    itemModalEl.classList.remove('hidden');
+  }
+
+  async function saveItem() {
+    const itemId = document.getElementById('item-id').value;
+    const name = document.getElementById('item-name').value;
+    const price = parseFloat(document.getElementById('item-price').value);
+    const quantity = parseInt(document.getElementById('item-quantity').value);
+
+    if (!itemId || !name || isNaN(price) || isNaN(quantity)) {
+      showModal('Error', 'Please fill in all fields with valid values');
+      return;
+    }
+
+    try {
+      const url = `/api/merchants/${currentMerchantId}/items/${itemId}`;
+      const method = currentEditingItem ? 'PUT' : 'POST';
+      
+      const response = await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          merchant_id: currentMerchantId,
+          item_id: itemId,
+          name: name,
+          price: price,
+          quantity: quantity
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to ${currentEditingItem ? 'update' : 'add'} item: ${response.status}`);
+      }
+
+      hideItemModal();
+      await loadProducts();
+      showModal('Success', `Item ${currentEditingItem ? 'updated' : 'added'} successfully`);
+    } catch (error) {
+      showModal('Error', `Failed to save item: ${error.message}`);
+    }
+  }
+
+  async function deleteItem() {
+    if (!currentEditingItem) return;
+    
+    if (!confirm(`Are you sure you want to delete "${currentEditingItem.name}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/merchants/${currentMerchantId}/items/${currentEditingItem.itemId}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete item: ${response.status}`);
+      }
+
+      hideItemModal();
+      await loadProducts();
+      showModal('Success', 'Item deleted successfully');
+    } catch (error) {
+      showModal('Error', `Failed to delete item: ${error.message}`);
+    }
+  }
+
+  // Event listeners
+  addItemBtn.onclick = showItemModal;
+  itemSaveBtn.onclick = saveItem;
+  itemDeleteBtn.onclick = deleteItem;
+  itemCancelBtn.onclick = hideItemModal;
+  itemModalEl.addEventListener('click', (e) => { if (e.target === itemModalEl) hideItemModal(); });
+
+  // Order cancellation
+  async function cancelOrder(orderId) {
+    const reason = prompt('Please enter a cancellation reason:');
+    if (!reason) return;
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to cancel order: ${response.status}`);
+      }
+
+      showModal('Success', 'Order cancelled successfully');
+      await loadOrders();
+    } catch (error) {
+      showModal('Error', `Failed to cancel order: ${error.message}`);
+    }
+  }
+
+  // Make functions globally available
+  window.cancelOrder = cancelOrder;
+
+  // Order shipping
+  async function shipOrder(orderId) {
+    const trackingNumber = prompt('Enter tracking number (optional):') || '';
+    const carrier = prompt('Enter carrier (default: FedEx):') || 'FedEx';
+    const serviceType = prompt('Enter service type (default: Ground):') || 'Ground';
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/ship`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          tracking_number: trackingNumber,
+          carrier: carrier,
+          service_type: serviceType
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to ship order: ${response.status}`);
+      }
+
+      showModal('Shipping Started', 'Order is being shipped and will be automatically delivered in 3 seconds.');
+      await loadOrders();
+      
+      // Schedule automatic delivery after 3 seconds
+      setTimeout(async () => {
+        try {
+          const deliveryResponse = await fetch(`/api/orders/${orderId}/deliver`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          
+          if (deliveryResponse.ok) {
+            console.log(`Order ${orderId} automatically delivered`);
+            await loadOrders(); // Refresh the order list to show the updated status
+          } else {
+            console.error(`Failed to auto-deliver order ${orderId}`);
+          }
+        } catch (error) {
+          console.error(`Error auto-delivering order ${orderId}:`, error);
+        }
+      }, 3000); // 3 seconds
+    } catch (error) {
+      showModal('Error', `Failed to ship order: ${error.message}`);
+    }
+  }
+
+  // Order delivery
+  async function deliverOrder(orderId) {
+    if (!confirm('Mark this order as delivered?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/deliver`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to deliver order: ${response.status}`);
+      }
+
+      showModal('Success', 'Order marked as delivered');
+      await loadOrders();
+    } catch (error) {
+      showModal('Error', `Failed to deliver order: ${error.message}`);
+    }
+  }
+
+  // Make functions globally available
+  window.shipOrder = shipOrder;
+  window.deliverOrder = deliverOrder;

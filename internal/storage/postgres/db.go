@@ -299,3 +299,154 @@ func GetMerchantItems(merchantID string) ([]*merchantpb.Item, error) {
 	log.Printf("[DB] Retrieved %d items for merchant: %s", len(items), merchantID)
 	return items, nil
 }
+
+// AddMerchantItem adds a new item to a merchant's inventory
+func AddMerchantItem(merchantID, itemID, name string, price float64, quantity int32) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	query := `
+		INSERT INTO merchant_items (merchant_id, item_id, name, price, quantity)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (merchant_id, item_id) DO UPDATE SET
+			name = EXCLUDED.name,
+			price = EXCLUDED.price,
+			quantity = EXCLUDED.quantity,
+			updated_at = CURRENT_TIMESTAMP
+	`
+	_, err := DB.Exec(query, merchantID, itemID, name, price, quantity)
+	if err != nil {
+		return fmt.Errorf("failed to add merchant item: %w", err)
+	}
+	log.Printf("[DB] Added/Updated merchant item: %s/%s", merchantID, itemID)
+	return nil
+}
+
+// UpdateMerchantItem updates an existing merchant item
+func UpdateMerchantItem(merchantID, itemID, name string, price float64, quantity int32) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	query := `
+		UPDATE merchant_items 
+		SET name = $3, price = $4, quantity = $5, updated_at = CURRENT_TIMESTAMP
+		WHERE merchant_id = $1 AND item_id = $2
+	`
+	result, err := DB.Exec(query, merchantID, itemID, name, price, quantity)
+	if err != nil {
+		return fmt.Errorf("failed to update merchant item: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("merchant item not found: %s/%s", merchantID, itemID)
+	}
+	log.Printf("[DB] Updated merchant item: %s/%s", merchantID, itemID)
+	return nil
+}
+
+// DeleteMerchantItem removes an item from a merchant's inventory
+func DeleteMerchantItem(merchantID, itemID string) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	query := `DELETE FROM merchant_items WHERE merchant_id = $1 AND item_id = $2`
+	result, err := DB.Exec(query, merchantID, itemID)
+	if err != nil {
+		return fmt.Errorf("failed to delete merchant item: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("merchant item not found: %s/%s", merchantID, itemID)
+	}
+	log.Printf("[DB] Deleted merchant item: %s/%s", merchantID, itemID)
+	return nil
+}
+
+// DeductStockFromItems reduces stock for multiple items (used during order creation)
+func DeductStockFromItems(merchantID string, items []*orderpb.OrderItems) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	// Start a transaction to ensure all stock deductions happen atomically
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check stock availability and deduct
+	for _, item := range items {
+		var currentStock int32
+		err := tx.QueryRow(`
+			SELECT quantity FROM merchant_items 
+			WHERE merchant_id = $1 AND item_id = $2
+		`, merchantID, item.ProductId).Scan(&currentStock)
+
+		if err != nil {
+			return fmt.Errorf("failed to check stock for item %s: %w", item.ProductId, err)
+		}
+
+		if currentStock < item.Quantity {
+			return fmt.Errorf("insufficient stock for item %s: requested %d, available %d",
+				item.ProductId, item.Quantity, currentStock)
+		}
+
+		// Deduct the stock
+		_, err = tx.Exec(`
+			UPDATE merchant_items 
+			SET quantity = quantity - $3, updated_at = CURRENT_TIMESTAMP
+			WHERE merchant_id = $1 AND item_id = $2
+		`, merchantID, item.ProductId, item.Quantity)
+
+		if err != nil {
+			return fmt.Errorf("failed to deduct stock for item %s: %w", item.ProductId, err)
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit stock deduction transaction: %w", err)
+	}
+
+	log.Printf("[DB] Successfully deducted stock for %d items for merchant: %s", len(items), merchantID)
+	return nil
+}
+
+// RestoreStockToItems restores stock for multiple items (used during order cancellation)
+func RestoreStockToItems(merchantID string, items []*orderpb.OrderItems) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	// Start a transaction to ensure all stock restorations happen atomically
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Restore stock for each item
+	for _, item := range items {
+		_, err = tx.Exec(`
+			UPDATE merchant_items 
+			SET quantity = quantity + $3, updated_at = CURRENT_TIMESTAMP
+			WHERE merchant_id = $1 AND item_id = $2
+		`, merchantID, item.ProductId, item.Quantity)
+
+		if err != nil {
+			return fmt.Errorf("failed to restore stock for item %s: %w", item.ProductId, err)
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit stock restoration transaction: %w", err)
+	}
+
+	log.Printf("[DB] Successfully restored stock for %d items for merchant: %s", len(items), merchantID)
+	return nil
+}

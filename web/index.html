@@ -22,6 +22,7 @@
           </select>
         </label>
         <button id="refresh-products">Refresh Products</button>
+        <button id="add-item-btn">Add New Item</button>
       </div>
       <div id="products" class="grid"></div>
     </section>
@@ -30,8 +31,15 @@
       <h2>Basket</h2>
       <div id="basket-empty">Your basket is empty.</div>
       <table id="basket-table" class="hidden">
-        <thead><tr><th>Product</th><th>Qty</th><th></th></tr></thead>
+        <thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Subtotal</th><th></th></tr></thead>
         <tbody id="basket-body"></tbody>
+        <tfoot>
+          <tr id="total-row" class="hidden">
+            <td colspan="3" style="text-align: right; font-weight: bold;">Total:</td>
+            <td id="basket-total" style="font-weight: bold;"></td>
+            <td></td>
+          </tr>
+        </tfoot>
       </table>
       <div class="basket-actions">
         <label>Customer ID: <input id="customer-id" placeholder="customer-001" /></label>
@@ -50,6 +58,37 @@
       <h3 id="modal-title"></h3>
       <div id="modal-body"></div>
       <div class="modal-actions"><button id="modal-close">OK</button></div>
+    </div>
+  </div>
+
+  <div id="item-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="item-modal-title">Manage Item</h3>
+      <div id="item-modal-body">
+        <form id="item-form">
+          <div class="form-group">
+            <label for="item-id">Item ID:</label>
+            <input type="text" id="item-id" name="item-id" required>
+          </div>
+          <div class="form-group">
+            <label for="item-name">Name:</label>
+            <input type="text" id="item-name" name="item-name" required>
+          </div>
+          <div class="form-group">
+            <label for="item-price">Price:</label>
+            <input type="number" id="item-price" name="item-price" step="0.01" min="0" required>
+          </div>
+          <div class="form-group">
+            <label for="item-quantity">Stock Quantity:</label>
+            <input type="number" id="item-quantity" name="item-quantity" min="0" required>
+          </div>
+        </form>
+      </div>
+      <div class="modal-actions">
+        <button id="item-save-btn">Save</button>
+        <button id="item-delete-btn" class="hidden">Delete</button>
+        <button id="item-cancel-btn">Cancel</button>
+      </div>
     </div>
   </div>
   <script src="/static/app.js"></script>

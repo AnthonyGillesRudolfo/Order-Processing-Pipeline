@@ -51,11 +51,47 @@ message UpdateStockResponse {
   Item item = 1; // updated item
 }
 
+message AddItemRequest {
+  string merchant_id = 1;
+  string item_id = 2;
+  string name = 3;
+  double price = 4;
+  int32 quantity = 5;
+}
+
+message AddItemResponse {
+  Item item = 1;
+}
+
+message UpdateItemRequest {
+  string merchant_id = 1;
+  string item_id = 2;
+  string name = 3;
+  double price = 4;
+  int32 quantity = 5;
+}
+
+message UpdateItemResponse {
+  Item item = 1;
+}
+
+message DeleteItemRequest {
+  string merchant_id = 1;
+  string item_id = 2;
+}
+
+message DeleteItemResponse {
+  bool success = 1;
+}
+
 service MerchantService {
   rpc GetMerchant(GetMerchantRequest) returns (Merchant);
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
   rpc GetItem(GetItemRequest) returns (Item);
   rpc UpdateStock(UpdateStockRequest) returns (UpdateStockResponse);
+  rpc AddItem(AddItemRequest) returns (AddItemResponse);
+  rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse);
+  rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse);
 }
 
 

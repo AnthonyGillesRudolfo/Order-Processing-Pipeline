@@ -74,6 +74,12 @@ service OrderService {
   rpc UpdateOrderStatus(UpdateOrderStatusRequest) returns (UpdateOrderStatusResponse);
   // Continue the order after payment is marked completed
   rpc ContinueAfterPayment(ContinueAfterPaymentRequest) returns (ContinueAfterPaymentResponse);
+  // Cancel an order with saga pattern (only after payment is completed)
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  // Manually ship an order (move from PROCESSING to SHIPPED)
+  rpc ShipOrder(ShipOrderRequest) returns (ShipOrderResponse);
+  // Manually mark order as delivered (move from SHIPPED to DELIVERED)
+  rpc DeliverOrder(DeliverOrderRequest) returns (DeliverOrderResponse);
 }
 
 message ContinueAfterPaymentRequest {
@@ -82,4 +88,37 @@ message ContinueAfterPaymentRequest {
 
 message ContinueAfterPaymentResponse {
   bool ok = 1;
+}
+
+message CancelOrderRequest {
+  string order_id = 1;
+  string reason = 2; // Optional cancellation reason
+}
+
+message CancelOrderResponse {
+  bool success = 1;
+  string message = 2;
+  string refund_id = 3; // Xendit refund ID if applicable
+}
+
+message ShipOrderRequest {
+  string order_id = 1;
+  string tracking_number = 2;
+  string carrier = 3;
+  string service_type = 4;
+}
+
+message ShipOrderResponse {
+  bool success = 1;
+  string message = 2;
+  string shipment_id = 3;
+}
+
+message DeliverOrderRequest {
+  string order_id = 1;
+}
+
+message DeliverOrderResponse {
+  bool success = 1;
+  string message = 2;
 }
