@@ -234,7 +234,12 @@ let currentMerchantId = 'm_001'; // Default merchant
             ${o.status === 'PROCESSING' || o.status === 'SHIPPED' ? 
               `<button onclick="cancelOrder('${o.id}')" style="background-color: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Cancel Order</button>` : ''}
             ${o.status === 'DELIVERED' ? 
-              `<span style="color: #28a745; font-weight: bold;">✓ Delivered</span>` : ''}
+              `<button onclick="confirmOrder('${o.id}')" style="background-color: #28a745; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Confirm Order</button>
+               <button onclick="returnOrder('${o.id}')" style="background-color: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Return Order</button>` : ''}
+            ${o.status === 'COMPLETED' ? 
+              `<span style="color: #28a745; font-weight: bold;">✓ Order Completed</span>` : ''}
+            ${o.status === 'RETURNED' ? 
+              `<span style="color: #dc3545; font-weight: bold;">↩ Order Returned</span>` : ''}
           </div>
         `;
         ordersListEl.appendChild(div);
@@ -449,6 +454,65 @@ let currentMerchantId = 'm_001'; // Default merchant
     }
   }
 
+  // Order confirmation
+  async function confirmOrder(orderId) {
+    if (!confirm('Confirm this order as completed?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to confirm order: ${response.status}`);
+      }
+
+      showModal('Success', 'Order confirmed successfully');
+      await loadOrders();
+    } catch (error) {
+      showModal('Error', `Failed to confirm order: ${error.message}`);
+    }
+  }
+
+  // Order return
+  async function returnOrder(orderId) {
+    const reason = prompt('Please enter a return reason:');
+    if (!reason) return;
+
+    if (!confirm(`Are you sure you want to return this order?\n\nReason: ${reason}\n\nThis will process a refund and restore stock to inventory.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/orders/${orderId}/return`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to return order: ${response.status}`);
+      }
+
+      const result = await response.json();
+      let message = 'Order returned successfully';
+      if (result.refund_id) {
+        message += `\nRefund ID: ${result.refund_id}`;
+      }
+      
+      showModal('Success', message);
+      await loadOrders();
+    } catch (error) {
+      showModal('Error', `Failed to return order: ${error.message}`);
+    }
+  }
+
   // Make functions globally available
   window.shipOrder = shipOrder;
   window.deliverOrder = deliverOrder;
+  window.confirmOrder = confirmOrder;
+  window.returnOrder = returnOrder;
