@@ -230,7 +230,8 @@ let currentMerchantId = 'm_001'; // Default merchant
             ${o.status === 'PROCESSING' ? 
               `<button onclick="shipOrder('${o.id}')" style="background-color: #007bff; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Ship Order (Auto-Deliver)</button>` : ''}
             ${o.status === 'SHIPPED' ? 
-              `<span style="color: #28a745; font-weight: bold; margin-right: 8px;">In Transit...</span>` : ''}
+              `<span style="color: #28a745; font-weight: bold; margin-right: 8px;">In Transit...</span>
+               <button onclick="deliverOrder('${o.id}')" style="background-color: #ffc107; color: black; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-right: 8px;">Manual Deliver</button>` : ''}
             ${o.status === 'PROCESSING' || o.status === 'SHIPPED' ? 
               `<button onclick="cancelOrder('${o.id}')" style="background-color: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">Cancel Order</button>` : ''}
             ${o.status === 'DELIVERED' ? 
@@ -403,31 +404,61 @@ let currentMerchantId = 'm_001'; // Default merchant
         throw new Error(`Failed to ship order: ${response.status}`);
       }
 
-      showModal('Shipping Started', 'Order is being shipped and will be automatically delivered in 3 seconds.');
+      showModal('Shipping Started', 'Order is being shipped and will be automatically delivered in 5 seconds.');
       await loadOrders();
       
-      // Schedule automatic delivery after 3 seconds
-      setTimeout(async () => {
-        try {
-          const deliveryResponse = await fetch(`/api/orders/${orderId}/deliver`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-          });
-          
-          if (deliveryResponse.ok) {
-            console.log(`Order ${orderId} automatically delivered`);
-            await loadOrders(); // Refresh the order list to show the updated status
-          } else {
-            console.error(`Failed to auto-deliver order ${orderId}`);
-          }
-        } catch (error) {
-          console.error(`Error auto-delivering order ${orderId}:`, error);
-        }
-      }, 3000); // 3 seconds
+      // Schedule automatic delivery with retry logic
+      scheduleAutomaticDelivery(orderId);
     } catch (error) {
       showModal('Error', `Failed to ship order: ${error.message}`);
     }
+  }
+
+  // Robust automatic delivery with retry logic
+  async function scheduleAutomaticDelivery(orderId, attempt = 1, maxAttempts = 3) {
+    const delay = 5000; // 5 seconds initial delay
+    
+    setTimeout(async () => {
+      try {
+        console.log(`Attempting automatic delivery for order ${orderId} (attempt ${attempt}/${maxAttempts})`);
+        
+        const deliveryResponse = await fetch(`/api/orders/${orderId}/deliver`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        
+        if (deliveryResponse.ok) {
+          console.log(`Order ${orderId} automatically delivered successfully`);
+          await loadOrders(); // Refresh the order list to show the updated status
+        } else {
+          const errorText = await deliveryResponse.text();
+          console.error(`Failed to auto-deliver order ${orderId} (attempt ${attempt}): ${deliveryResponse.status} - ${errorText}`);
+          
+          // Retry if we haven't exceeded max attempts
+          if (attempt < maxAttempts) {
+            console.log(`Retrying delivery for order ${orderId} in 3 seconds...`);
+            scheduleAutomaticDelivery(orderId, attempt + 1, maxAttempts);
+          } else {
+            console.error(`Max retry attempts reached for order ${orderId}. Order may need manual delivery.`);
+            // Refresh orders to show current status
+            await loadOrders();
+          }
+        }
+      } catch (error) {
+        console.error(`Error auto-delivering order ${orderId} (attempt ${attempt}):`, error);
+        
+        // Retry if we haven't exceeded max attempts
+        if (attempt < maxAttempts) {
+          console.log(`Retrying delivery for order ${orderId} in 3 seconds...`);
+          scheduleAutomaticDelivery(orderId, attempt + 1, maxAttempts);
+        } else {
+          console.error(`Max retry attempts reached for order ${orderId}. Order may need manual delivery.`);
+          // Refresh orders to show current status
+          await loadOrders();
+        }
+      }
+    }, delay);
   }
 
   // Order delivery

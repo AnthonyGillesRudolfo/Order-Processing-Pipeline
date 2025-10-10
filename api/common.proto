@@ -22,6 +22,7 @@ enum PaymentStatus {
   PAYMENT_COMPLETED = 2;
   PAYMENT_FAILED = 3;
   PAYMENT_REFUNDED = 4;
+  PAYMENT_EXPIRED = 5;
 }
 
 enum ShipmentStatus {

@@ -68,6 +68,8 @@ service PaymentService {
   rpc MarkPaymentCompleted(MarkPaymentCompletedRequest) returns (MarkPaymentCompletedResponse);
   // Process refund for a completed payment
   rpc ProcessRefund(ProcessRefundRequest) returns (ProcessRefundResponse);
+  // Mark payment as expired and handle order cancellation
+  rpc MarkPaymentExpired(MarkPaymentExpiredRequest) returns (MarkPaymentExpiredResponse);
 }
 
 message MarkPaymentCompletedRequest {
@@ -77,4 +79,14 @@ message MarkPaymentCompletedRequest {
 
 message MarkPaymentCompletedResponse {
   bool ok = 1;
+}
+
+message MarkPaymentExpiredRequest {
+  string payment_id = 1;
+  string order_id = 2;
+}
+
+message MarkPaymentExpiredResponse {
+  bool success = 1;
+  string message = 2;
 }

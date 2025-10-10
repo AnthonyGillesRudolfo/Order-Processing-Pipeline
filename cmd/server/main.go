@@ -97,7 +97,8 @@ func main() {
 	paymentVirtualObject := restate.NewObject("order.sv1.PaymentService", restate.WithProtoJSON).
 		Handler("ProcessPayment", restate.NewObjectHandler(internalpayment.ProcessPayment)).
 		Handler("MarkPaymentCompleted", restate.NewObjectHandler(internalpayment.MarkPaymentCompleted)).
-		Handler("ProcessRefund", restate.NewObjectHandler(internalpayment.ProcessRefund))
+		Handler("ProcessRefund", restate.NewObjectHandler(internalpayment.ProcessRefund)).
+		Handler("MarkPaymentExpired", restate.NewObjectHandler(internalpayment.MarkPaymentExpired))
 	srv = srv.Bind(paymentVirtualObject)
 
 	// Bind ShippingService as a Virtual Object
@@ -998,7 +999,40 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 
 	case "EXPIRED":
 		log.Printf("[Xendit Webhook] Payment expired for external_id: %s", externalID)
-		// Could implement payment expiration logic here if needed
+
+		// Get order information from database
+		orderInfo, err := getOrderFromDBByPaymentID(externalID)
+		if err != nil {
+			log.Printf("[Xendit Webhook] Failed to find order for payment_id %s: %v", externalID, err)
+			http.Error(w, "order not found", http.StatusNotFound)
+			return
+		}
+
+		orderMap, _ := orderInfo["order"].(map[string]any)
+		orderID, _ := orderMap["id"].(string)
+
+		if orderID == "" {
+			log.Printf("[Xendit Webhook] Order ID not found for payment_id %s", externalID)
+			http.Error(w, "order id not found", http.StatusInternalServerError)
+			return
+		}
+
+		// Mark payment as expired via Restate
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		expiredURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentExpired", runtimeURL, externalID)
+
+		expiredReq := map[string]any{
+			"payment_id": externalID,
+			"order_id":   orderID,
+		}
+
+		if err := postJSON(expiredURL, expiredReq); err != nil {
+			log.Printf("[Xendit Webhook] Failed to mark payment expired: %v", err)
+			http.Error(w, "failed to mark payment expired", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[Xendit Webhook] Successfully processed payment expiration for order %s", orderID)
 
 	case "FAILED":
 		log.Printf("[Xendit Webhook] Payment failed for external_id: %s", externalID)
