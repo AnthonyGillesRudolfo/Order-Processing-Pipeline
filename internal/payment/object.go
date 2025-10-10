@@ -2,6 +2,7 @@ package payment
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -358,5 +359,136 @@ func ProcessRefund(ctx restate.ObjectContext, req *orderpb.ProcessRefundRequest)
 		RefundId: refundId,
 		Status:   refundStatus,
 		Message:  "Refund processed successfully",
+	}, nil
+}
+
+// MarkPaymentExpired handles expired payments by updating payment status and triggering order cancellation
+func MarkPaymentExpired(ctx restate.ObjectContext, req *orderpb.MarkPaymentExpiredRequest) (*orderpb.MarkPaymentExpiredResponse, error) {
+	paymentId := restate.Key(ctx)
+	log.Printf("[Payment Object %s] Marking payment as expired for order: %s", paymentId, req.OrderId)
+
+	// Update payment status to EXPIRED
+	restate.Set(ctx, "status", orderpb.PaymentStatus_PAYMENT_EXPIRED)
+
+	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		log.Printf("[Payment Object %s] Updating payment status to EXPIRED in database", paymentId)
+		return nil, postgres.UpdatePaymentStatus(paymentId, orderpb.PaymentStatus_PAYMENT_EXPIRED)
+	})
+	if err != nil {
+		log.Printf("[Payment Object %s] Warning: Failed to update payment status in database: %v", paymentId, err)
+	}
+
+	// Get order information to restore stock
+	orderInfo, err := getOrderFromDBByPaymentID(paymentId)
+	if err != nil {
+		log.Printf("[Payment Object %s] Failed to get order information for payment_id %s: %v", paymentId, paymentId, err)
+		return &orderpb.MarkPaymentExpiredResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to get order information: %v", err),
+		}, nil
+	}
+
+	orderMap, _ := orderInfo["order"].(map[string]any)
+	orderID, _ := orderMap["id"].(string)
+	merchantID, _ := orderMap["merchant_id"].(string)
+
+	if orderID == "" {
+		log.Printf("[Payment Object %s] Order ID not found for payment_id %s", paymentId, paymentId)
+		return &orderpb.MarkPaymentExpiredResponse{
+			Success: false,
+			Message: "Order ID not found",
+		}, nil
+	}
+
+	// Get order items to restore stock
+	orderItems, err := postgres.GetOrderItems(orderID)
+	if err != nil {
+		log.Printf("[Payment Object %s] Failed to get order items for order %s: %v", paymentId, orderID, err)
+		return &orderpb.MarkPaymentExpiredResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to get order items: %v", err),
+		}, nil
+	}
+
+	// Restore stock to merchant inventory
+	if merchantID != "" && len(orderItems) > 0 {
+		log.Printf("[Payment Object %s] Restoring stock for %d items to merchant %s", paymentId, len(orderItems), merchantID)
+		_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.RestoreStockToItems(merchantID, orderItems)
+		})
+		if err != nil {
+			log.Printf("[Payment Object %s] Failed to restore stock: %v", paymentId, err)
+			return &orderpb.MarkPaymentExpiredResponse{
+				Success: false,
+				Message: fmt.Sprintf("Failed to restore stock: %v", err),
+			}, nil
+		}
+		log.Printf("[Payment Object %s] Successfully restored stock for order %s", paymentId, orderID)
+	}
+
+	// Update order status to CANCELLED
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		log.Printf("[Payment Object %s] Updating order status to CANCELLED for order %s", paymentId, orderID)
+		return nil, postgres.UpdateOrderStatusDB(orderID, orderpb.OrderStatus_CANCELLED)
+	})
+	if err != nil {
+		log.Printf("[Payment Object %s] Failed to update order status to CANCELLED: %v", paymentId, err)
+		return &orderpb.MarkPaymentExpiredResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to update order status: %v", err),
+		}, nil
+	}
+
+	log.Printf("[Payment Object %s] Successfully processed payment expiration for order %s", paymentId, orderID)
+	return &orderpb.MarkPaymentExpiredResponse{
+		Success: true,
+		Message: "Payment marked as expired, stock restored, order cancelled",
+	}, nil
+}
+
+// getOrderFromDBByPaymentID retrieves order information by payment ID
+func getOrderFromDBByPaymentID(paymentID string) (map[string]any, error) {
+	if postgres.DB == nil {
+		return nil, sql.ErrConnDone
+	}
+
+	row := postgres.DB.QueryRow(`
+		SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at, o.merchant_id,
+		       COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
+		FROM orders o
+		LEFT JOIN payments p ON p.id = o.payment_id
+		WHERE o.payment_id = $1
+	`, paymentID)
+
+	var (
+		id, customerID, status, paymentIDResult, merchantID string
+		shipmentID, trackingNumber                          sql.NullString
+		totalAmount                                         sql.NullFloat64
+		updatedAt                                           string
+		paymentStatus                                       string
+		invoiceURL                                          string
+	)
+	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentIDResult, &shipmentID, &trackingNumber, &updatedAt, &merchantID, &paymentStatus, &invoiceURL); err != nil {
+		log.Printf("[Payment Object] getOrderFromDBByPaymentID failed for payment_id %s: %v", paymentID, err)
+		return nil, err
+	}
+
+	log.Printf("[Payment Object] getOrderFromDBByPaymentID found order %s: customer=%s, status=%s, payment_id=%s", id, customerID, status, paymentIDResult)
+	return map[string]any{
+		"order": map[string]any{
+			"id":              id,
+			"customer_id":     customerID,
+			"status":          status,
+			"total_amount":    totalAmount.Float64,
+			"payment_id":      paymentIDResult,
+			"shipment_id":     shipmentID.String,
+			"tracking_number": trackingNumber.String,
+			"updated_at":      updatedAt,
+			"merchant_id":     merchantID,
+		},
+		"payment": map[string]any{
+			"status":      paymentStatus,
+			"invoice_url": invoiceURL,
+		},
 	}, nil
 }

@@ -662,6 +662,110 @@ func (x *MarkPaymentCompletedResponse) GetOk() bool {
 	return false
 }
 
+type MarkPaymentExpiredRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaymentId     string                 `protobuf:"bytes,1,opt,name=payment_id,json=paymentId,proto3" json:"payment_id,omitempty"`
+	OrderId       string                 `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkPaymentExpiredRequest) Reset() {
+	*x = MarkPaymentExpiredRequest{}
+	mi := &file_payment_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkPaymentExpiredRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkPaymentExpiredRequest) ProtoMessage() {}
+
+func (x *MarkPaymentExpiredRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkPaymentExpiredRequest.ProtoReflect.Descriptor instead.
+func (*MarkPaymentExpiredRequest) Descriptor() ([]byte, []int) {
+	return file_payment_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *MarkPaymentExpiredRequest) GetPaymentId() string {
+	if x != nil {
+		return x.PaymentId
+	}
+	return ""
+}
+
+func (x *MarkPaymentExpiredRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+type MarkPaymentExpiredResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarkPaymentExpiredResponse) Reset() {
+	*x = MarkPaymentExpiredResponse{}
+	mi := &file_payment_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarkPaymentExpiredResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarkPaymentExpiredResponse) ProtoMessage() {}
+
+func (x *MarkPaymentExpiredResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_payment_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarkPaymentExpiredResponse.ProtoReflect.Descriptor instead.
+func (*MarkPaymentExpiredResponse) Descriptor() ([]byte, []int) {
+	return file_payment_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MarkPaymentExpiredResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *MarkPaymentExpiredResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_payment_service_proto protoreflect.FileDescriptor
 
 const file_payment_service_proto_rawDesc = "" +
@@ -715,11 +819,19 @@ const file_payment_service_proto_rawDesc = "" +
 	"payment_id\x18\x01 \x01(\tR\tpaymentId\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\tR\aorderId\".\n" +
 	"\x1cMarkPaymentCompletedResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\xa4\x02\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"U\n" +
+	"\x19MarkPaymentExpiredRequest\x12\x1d\n" +
+	"\n" +
+	"payment_id\x18\x01 \x01(\tR\tpaymentId\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\tR\aorderId\"P\n" +
+	"\x1aMarkPaymentExpiredResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\x87\x03\n" +
 	"\x0ePaymentService\x12U\n" +
 	"\x0eProcessPayment\x12 .order.sv1.ProcessPaymentRequest\x1a!.order.sv1.ProcessPaymentResponse\x12g\n" +
 	"\x14MarkPaymentCompleted\x12&.order.sv1.MarkPaymentCompletedRequest\x1a'.order.sv1.MarkPaymentCompletedResponse\x12R\n" +
-	"\rProcessRefund\x12\x1f.order.sv1.ProcessRefundRequest\x1a .order.sv1.ProcessRefundResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
+	"\rProcessRefund\x12\x1f.order.sv1.ProcessRefundRequest\x1a .order.sv1.ProcessRefundResponse\x12a\n" +
+	"\x12MarkPaymentExpired\x12$.order.sv1.MarkPaymentExpiredRequest\x1a%.order.sv1.MarkPaymentExpiredResponseBPZNgithub.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpbb\x06proto3"
 
 var (
 	file_payment_service_proto_rawDescOnce sync.Once
@@ -733,7 +845,7 @@ func file_payment_service_proto_rawDescGZIP() []byte {
 	return file_payment_service_proto_rawDescData
 }
 
-var file_payment_service_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_payment_service_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_payment_service_proto_goTypes = []any{
 	(*ProcessPaymentRequest)(nil),        // 0: order.sv1.ProcessPaymentRequest
 	(*ProcessPaymentResponse)(nil),       // 1: order.sv1.ProcessPaymentResponse
@@ -745,22 +857,26 @@ var file_payment_service_proto_goTypes = []any{
 	(*ProcessRefundResponse)(nil),        // 7: order.sv1.ProcessRefundResponse
 	(*MarkPaymentCompletedRequest)(nil),  // 8: order.sv1.MarkPaymentCompletedRequest
 	(*MarkPaymentCompletedResponse)(nil), // 9: order.sv1.MarkPaymentCompletedResponse
-	(PaymentStatus)(0),                   // 10: order.sv1.PaymentStatus
+	(*MarkPaymentExpiredRequest)(nil),    // 10: order.sv1.MarkPaymentExpiredRequest
+	(*MarkPaymentExpiredResponse)(nil),   // 11: order.sv1.MarkPaymentExpiredResponse
+	(PaymentStatus)(0),                   // 12: order.sv1.PaymentStatus
 }
 var file_payment_service_proto_depIdxs = []int32{
 	2,  // 0: order.sv1.ProcessPaymentRequest.payment_method:type_name -> order.sv1.PaymentMethod
-	10, // 1: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
+	12, // 1: order.sv1.ProcessPaymentResponse.status:type_name -> order.sv1.PaymentStatus
 	3,  // 2: order.sv1.PaymentMethod.credit_card:type_name -> order.sv1.CreditCard
 	4,  // 3: order.sv1.PaymentMethod.bank_transfer:type_name -> order.sv1.BankTransfer
 	5,  // 4: order.sv1.PaymentMethod.digital_wallet:type_name -> order.sv1.DigitalWallet
 	0,  // 5: order.sv1.PaymentService.ProcessPayment:input_type -> order.sv1.ProcessPaymentRequest
 	8,  // 6: order.sv1.PaymentService.MarkPaymentCompleted:input_type -> order.sv1.MarkPaymentCompletedRequest
 	6,  // 7: order.sv1.PaymentService.ProcessRefund:input_type -> order.sv1.ProcessRefundRequest
-	1,  // 8: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
-	9,  // 9: order.sv1.PaymentService.MarkPaymentCompleted:output_type -> order.sv1.MarkPaymentCompletedResponse
-	7,  // 10: order.sv1.PaymentService.ProcessRefund:output_type -> order.sv1.ProcessRefundResponse
-	8,  // [8:11] is the sub-list for method output_type
-	5,  // [5:8] is the sub-list for method input_type
+	10, // 8: order.sv1.PaymentService.MarkPaymentExpired:input_type -> order.sv1.MarkPaymentExpiredRequest
+	1,  // 9: order.sv1.PaymentService.ProcessPayment:output_type -> order.sv1.ProcessPaymentResponse
+	9,  // 10: order.sv1.PaymentService.MarkPaymentCompleted:output_type -> order.sv1.MarkPaymentCompletedResponse
+	7,  // 11: order.sv1.PaymentService.ProcessRefund:output_type -> order.sv1.ProcessRefundResponse
+	11, // 12: order.sv1.PaymentService.MarkPaymentExpired:output_type -> order.sv1.MarkPaymentExpiredResponse
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -783,7 +899,7 @@ func file_payment_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_payment_service_proto_rawDesc), len(file_payment_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

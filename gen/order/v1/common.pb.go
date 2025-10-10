@@ -90,6 +90,7 @@ const (
 	PaymentStatus_PAYMENT_COMPLETED  PaymentStatus = 2
 	PaymentStatus_PAYMENT_FAILED     PaymentStatus = 3
 	PaymentStatus_PAYMENT_REFUNDED   PaymentStatus = 4
+	PaymentStatus_PAYMENT_EXPIRED    PaymentStatus = 5
 )
 
 // Enum value maps for PaymentStatus.
@@ -100,6 +101,7 @@ var (
 		2: "PAYMENT_COMPLETED",
 		3: "PAYMENT_FAILED",
 		4: "PAYMENT_REFUNDED",
+		5: "PAYMENT_EXPIRED",
 	}
 	PaymentStatus_value = map[string]int32{
 		"PAYMENT_PENDING":    0,
@@ -107,6 +109,7 @@ var (
 		"PAYMENT_COMPLETED":  2,
 		"PAYMENT_FAILED":     3,
 		"PAYMENT_REFUNDED":   4,
+		"PAYMENT_EXPIRED":    5,
 	}
 )
 
@@ -208,13 +211,14 @@ const file_common_proto_rawDesc = "" +
 	"\tDELIVERED\x10\x03\x12\r\n" +
 	"\tCOMPLETED\x10\x04\x12\r\n" +
 	"\tCANCELLED\x10\x05\x12\f\n" +
-	"\bRETURNED\x10\x06*}\n" +
+	"\bRETURNED\x10\x06*\x92\x01\n" +
 	"\rPaymentStatus\x12\x13\n" +
 	"\x0fPAYMENT_PENDING\x10\x00\x12\x16\n" +
 	"\x12PAYMENT_PROCESSING\x10\x01\x12\x15\n" +
 	"\x11PAYMENT_COMPLETED\x10\x02\x12\x12\n" +
 	"\x0ePAYMENT_FAILED\x10\x03\x12\x14\n" +
-	"\x10PAYMENT_REFUNDED\x10\x04*\xa6\x01\n" +
+	"\x10PAYMENT_REFUNDED\x10\x04\x12\x13\n" +
+	"\x0fPAYMENT_EXPIRED\x10\x05*\xa6\x01\n" +
 	"\x0eShipmentStatus\x12\x14\n" +
 	"\x10SHIPMENT_CREATED\x10\x00\x12\x16\n" +
 	"\x12SHIPMENT_PICKED_UP\x10\x01\x12\x17\n" +

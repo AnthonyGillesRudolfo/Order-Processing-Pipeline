@@ -450,3 +450,40 @@ func RestoreStockToItems(merchantID string, items []*orderpb.OrderItems) error {
 	log.Printf("[DB] Successfully restored stock for %d items for merchant: %s", len(items), merchantID)
 	return nil
 }
+
+// GetOrderItems retrieves all items for a specific order
+func GetOrderItems(orderID string) ([]*orderpb.OrderItems, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	rows, err := DB.Query(`
+		SELECT item_id, quantity 
+		FROM order_items 
+		WHERE order_id = $1
+	`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query order items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*orderpb.OrderItems
+	for rows.Next() {
+		var itemID string
+		var quantity int32
+		if err := rows.Scan(&itemID, &quantity); err != nil {
+			return nil, fmt.Errorf("failed to scan order item: %w", err)
+		}
+		items = append(items, &orderpb.OrderItems{
+			ProductId: itemID,
+			Quantity:  quantity,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating order items: %w", err)
+	}
+
+	log.Printf("[DB] Retrieved %d items for order: %s", len(items), orderID)
+	return items, nil
+}

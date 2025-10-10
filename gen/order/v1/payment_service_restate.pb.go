@@ -18,6 +18,8 @@ type PaymentServiceClient interface {
 	MarkPaymentCompleted(opts ...sdk_go.ClientOption) sdk_go.Client[*MarkPaymentCompletedRequest, *MarkPaymentCompletedResponse]
 	// Process refund for a completed payment
 	ProcessRefund(opts ...sdk_go.ClientOption) sdk_go.Client[*ProcessRefundRequest, *ProcessRefundResponse]
+	// Mark payment as expired and handle order cancellation
+	MarkPaymentExpired(opts ...sdk_go.ClientOption) sdk_go.Client[*MarkPaymentExpiredRequest, *MarkPaymentExpiredResponse]
 }
 
 type paymentServiceClient struct {
@@ -56,6 +58,14 @@ func (c *paymentServiceClient) ProcessRefund(opts ...sdk_go.ClientOption) sdk_go
 	return sdk_go.WithRequestType[*ProcessRefundRequest](sdk_go.Service[*ProcessRefundResponse](c.ctx, "order.sv1.PaymentService", "ProcessRefund", cOpts...))
 }
 
+func (c *paymentServiceClient) MarkPaymentExpired(opts ...sdk_go.ClientOption) sdk_go.Client[*MarkPaymentExpiredRequest, *MarkPaymentExpiredResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*MarkPaymentExpiredRequest](sdk_go.Service[*MarkPaymentExpiredResponse](c.ctx, "order.sv1.PaymentService", "MarkPaymentExpired", cOpts...))
+}
+
 // PaymentServiceServer is the server API for order.sv1.PaymentService service.
 // All implementations should embed UnimplementedPaymentServiceServer
 // for forward compatibility.
@@ -65,6 +75,8 @@ type PaymentServiceServer interface {
 	MarkPaymentCompleted(ctx sdk_go.Context, req *MarkPaymentCompletedRequest) (*MarkPaymentCompletedResponse, error)
 	// Process refund for a completed payment
 	ProcessRefund(ctx sdk_go.Context, req *ProcessRefundRequest) (*ProcessRefundResponse, error)
+	// Mark payment as expired and handle order cancellation
+	MarkPaymentExpired(ctx sdk_go.Context, req *MarkPaymentExpiredRequest) (*MarkPaymentExpiredResponse, error)
 }
 
 // UnimplementedPaymentServiceServer should be embedded to have
@@ -82,6 +94,9 @@ func (UnimplementedPaymentServiceServer) MarkPaymentCompleted(ctx sdk_go.Context
 }
 func (UnimplementedPaymentServiceServer) ProcessRefund(ctx sdk_go.Context, req *ProcessRefundRequest) (*ProcessRefundResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method ProcessRefund not implemented"), 501)
+}
+func (UnimplementedPaymentServiceServer) MarkPaymentExpired(ctx sdk_go.Context, req *MarkPaymentExpiredRequest) (*MarkPaymentExpiredResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method MarkPaymentExpired not implemented"), 501)
 }
 func (UnimplementedPaymentServiceServer) testEmbeddedByValue() {}
 
@@ -105,5 +120,6 @@ func NewPaymentServiceServer(srv PaymentServiceServer, opts ...sdk_go.ServiceDef
 	router = router.Handler("ProcessPayment", sdk_go.NewServiceHandler(srv.ProcessPayment))
 	router = router.Handler("MarkPaymentCompleted", sdk_go.NewServiceHandler(srv.MarkPaymentCompleted))
 	router = router.Handler("ProcessRefund", sdk_go.NewServiceHandler(srv.ProcessRefund))
+	router = router.Handler("MarkPaymentExpired", sdk_go.NewServiceHandler(srv.MarkPaymentExpired))
 	return router
 }
