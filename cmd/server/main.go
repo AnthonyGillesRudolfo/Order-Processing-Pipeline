@@ -88,7 +88,9 @@ func main() {
 	orderManagementObject := restate.NewObject("order.sv1.OrderManagementService", restate.WithProtoJSON).
 		Handler("CancelOrder", restate.NewObjectHandler(internalorder.CancelOrder)).
 		Handler("ShipOrder", restate.NewObjectHandler(internalorder.ShipOrder)).
-		Handler("DeliverOrder", restate.NewObjectHandler(internalorder.DeliverOrder))
+		Handler("DeliverOrder", restate.NewObjectHandler(internalorder.DeliverOrder)).
+		Handler("ConfirmOrder", restate.NewObjectHandler(internalorder.ConfirmOrder)).
+		Handler("ReturnOrder", restate.NewObjectHandler(internalorder.ReturnOrder))
 	srv = srv.Bind(orderManagementObject)
 
 	// Bind PaymentService as a Virtual Object
@@ -439,6 +441,86 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order cancelled successfully"})
+		return
+	}
+
+	// Handle confirm order endpoint
+	if strings.HasSuffix(path, "/confirm") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/confirm")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+
+		// Call Restate ConfirmOrder endpoint
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		url := fmt.Sprintf("%s/order.sv1.OrderManagementService/%s/ConfirmOrder", runtimeURL, orderID)
+
+		confirmReq := map[string]any{
+			"order_id": orderID,
+		}
+
+		if err := postJSON(url, confirmReq); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to confirm order", "detail": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order confirmed successfully"})
+		return
+	}
+
+	// Handle return order endpoint
+	if strings.HasSuffix(path, "/return") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/return")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		// Call Restate ReturnOrder endpoint
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		url := fmt.Sprintf("%s/order.sv1.OrderManagementService/%s/ReturnOrder", runtimeURL, orderID)
+
+		returnReq := map[string]any{
+			"order_id": orderID,
+			"reason":   reqBody.Reason,
+		}
+
+		resp, err := http.Post(url, "application/json", bytes.NewReader(func() []byte {
+			b, _ := json.Marshal(returnReq)
+			return b
+		}()))
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to return order", "detail": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to return order", "detail": fmt.Sprintf("status %d", resp.StatusCode)})
+			return
+		}
+
+		var returnResp map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&returnResp)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(returnResp)
 		return
 	}
 

@@ -80,6 +80,10 @@ service OrderService {
   rpc ShipOrder(ShipOrderRequest) returns (ShipOrderResponse);
   // Manually mark order as delivered (move from SHIPPED to DELIVERED)
   rpc DeliverOrder(DeliverOrderRequest) returns (DeliverOrderResponse);
+  // Confirm order after delivery (move from DELIVERED to COMPLETED)
+  rpc ConfirmOrder(ConfirmOrderRequest) returns (ConfirmOrderResponse);
+  // Return order after delivery (move from DELIVERED to RETURNED with refund)
+  rpc ReturnOrder(ReturnOrderRequest) returns (ReturnOrderResponse);
 }
 
 message ContinueAfterPaymentRequest {
@@ -121,4 +125,24 @@ message DeliverOrderRequest {
 message DeliverOrderResponse {
   bool success = 1;
   string message = 2;
+}
+
+message ConfirmOrderRequest {
+  string order_id = 1;
+}
+
+message ConfirmOrderResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ReturnOrderRequest {
+  string order_id = 1;
+  string reason = 2; // Reason for return
+}
+
+message ReturnOrderResponse {
+  bool success = 1;
+  string message = 2;
+  string refund_id = 3; // Xendit refund ID if applicable
 }

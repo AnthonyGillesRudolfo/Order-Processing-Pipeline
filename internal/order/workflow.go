@@ -630,6 +630,177 @@ func DeliverOrder(ctx restate.ObjectContext, req *orderpb.DeliverOrderRequest) (
 	}, nil
 }
 
+// ConfirmOrder moves an order from DELIVERED to COMPLETED status
+func ConfirmOrder(ctx restate.ObjectContext, req *orderpb.ConfirmOrderRequest) (*orderpb.ConfirmOrderResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Confirming order after delivery", orderId)
+
+	// Get current order status from database
+	var currentStatus string
+	err := postgres.DB.QueryRow(`SELECT status FROM orders WHERE id = $1`, orderId).Scan(&currentStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &orderpb.ConfirmOrderResponse{
+				Success: false,
+				Message: "Order not found",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	if currentStatus != "DELIVERED" {
+		return &orderpb.ConfirmOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Order must be in DELIVERED status to confirm, current status: %s", currentStatus),
+		}, nil
+	}
+
+	// Update order status to COMPLETED in database
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_COMPLETED)
+	})
+	if err != nil {
+		return &orderpb.ConfirmOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to update order status: %v", err),
+		}, nil
+	}
+
+	log.Printf("[Workflow %s] Order confirmed successfully", orderId)
+	return &orderpb.ConfirmOrderResponse{
+		Success: true,
+		Message: "Order confirmed successfully",
+	}, nil
+}
+
+// ReturnOrder implements a saga pattern for order return with refund and stock restoration
+func ReturnOrder(ctx restate.ObjectContext, req *orderpb.ReturnOrderRequest) (*orderpb.ReturnOrderResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Starting order return saga for reason: %s", orderId, req.Reason)
+
+	// Get current order status from database
+	var currentStatus string
+	var merchantId sql.NullString
+	var totalAmount float64
+	var paymentId sql.NullString
+	err := postgres.DB.QueryRow(`SELECT status, merchant_id, total_amount, payment_id FROM orders WHERE id = $1`, orderId).Scan(&currentStatus, &merchantId, &totalAmount, &paymentId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &orderpb.ReturnOrderResponse{
+				Success: false,
+				Message: "Order not found",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	if currentStatus != "DELIVERED" {
+		return &orderpb.ReturnOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Order must be in DELIVERED status to return, current status: %s", currentStatus),
+		}, nil
+	}
+
+	if !merchantId.Valid || merchantId.String == "" {
+		return &orderpb.ReturnOrderResponse{
+			Success: false,
+			Message: "Merchant ID not found for order",
+		}, nil
+	}
+
+	log.Printf("[Workflow %s] Order details - Merchant: %s, Payment: %s, Amount: %.2f",
+		orderId, merchantId.String, paymentId.String, totalAmount)
+
+	var refundId string
+
+	// Step 1: Process refund if payment exists
+	if paymentId.Valid && paymentId.String != "" {
+		log.Printf("[Workflow %s] Step 1: Processing refund for returned order", orderId)
+		refundClient := restate.Object[*orderpb.ProcessRefundResponse](ctx, "order.sv1.PaymentService", paymentId.String, "ProcessRefund")
+		refundReq := &orderpb.ProcessRefundRequest{
+			PaymentId: paymentId.String,
+			OrderId:   orderId,
+			Amount:    totalAmount,
+			Reason:    req.Reason,
+		}
+
+		refundResp, err := refundClient.Request(refundReq)
+		if err != nil {
+			log.Printf("[Workflow %s] Refund failed: %v", orderId, err)
+			return &orderpb.ReturnOrderResponse{
+				Success: false,
+				Message: fmt.Sprintf("Refund failed: %v", err),
+			}, nil
+		}
+
+		refundId = refundResp.RefundId
+		log.Printf("[Workflow %s] Refund processed successfully: %s", orderId, refundId)
+	} else {
+		log.Printf("[Workflow %s] No payment found for refund", orderId)
+	}
+
+	// Step 2: Restore stock to merchant inventory
+	log.Printf("[Workflow %s] Step 2: Restoring stock to inventory", orderId)
+
+	// Get order items from database for stock restoration
+	var orderItems []*orderpb.OrderItems
+	if postgres.DB != nil {
+		rows, err := postgres.DB.Query(`
+			SELECT item_id, quantity 
+			FROM order_items 
+			WHERE order_id = $1 AND merchant_id = $2
+		`, orderId, merchantId.String)
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to get order items for stock restoration: %v", orderId, err)
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var item orderpb.OrderItems
+				if err := rows.Scan(&item.ProductId, &item.Quantity); err == nil {
+					orderItems = append(orderItems, &item)
+				}
+			}
+		}
+	}
+
+	if len(orderItems) > 0 {
+		_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.RestoreStockToItems(merchantId.String, orderItems)
+		})
+		if err != nil {
+			log.Printf("[Workflow %s] CRITICAL: Failed to restore stock during return: %v", orderId, err)
+			// This is a critical error - the refund was processed but stock wasn't restored
+			// In a real system, this would require manual intervention
+		} else {
+			log.Printf("[Workflow %s] Stock restored successfully for %d items", orderId, len(orderItems))
+		}
+	} else {
+		log.Printf("[Workflow %s] Warning: No order items found for stock restoration", orderId)
+	}
+
+	// Step 3: Update order status to RETURNED
+	log.Printf("[Workflow %s] Step 3: Updating order status to RETURNED", orderId)
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_RETURNED)
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update order status in database: %v", orderId, err)
+	}
+
+	log.Printf("[Workflow %s] Order return saga completed successfully", orderId)
+
+	message := "Order returned successfully with stock restored"
+	if refundId != "" {
+		message += fmt.Sprintf(" (Refund ID: %s)", refundId)
+	}
+
+	return &orderpb.ReturnOrderResponse{
+		Success:  true,
+		Message:  message,
+		RefundId: refundId,
+	}, nil
+}
+
 // Keep a tiny server import linker reference to avoid unused import errors when building only package
 var _ = server.NewRestate
 

@@ -11,7 +11,9 @@ enum OrderStatus {
   PROCESSING = 1;        // Payment completed, shipment not yet created
   SHIPPED = 2;           // Shipment created and in transit
   DELIVERED = 3;         // Shipment delivered to customer
-  CANCELLED = 4;         // Order cancelled (payment failed or other issues)
+  COMPLETED = 4;         // Order confirmed by customer after delivery
+  CANCELLED = 5;         // Order cancelled (payment failed or other issues)
+  RETURNED = 6;          // Order returned by customer
 }
 
 enum PaymentStatus {

@@ -24,6 +24,10 @@ type OrderServiceClient interface {
 	ShipOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ShipOrderRequest, *ShipOrderResponse]
 	// Manually mark order as delivered (move from SHIPPED to DELIVERED)
 	DeliverOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*DeliverOrderRequest, *DeliverOrderResponse]
+	// Confirm order after delivery (move from DELIVERED to COMPLETED)
+	ConfirmOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ConfirmOrderRequest, *ConfirmOrderResponse]
+	// Return order after delivery (move from DELIVERED to RETURNED with refund)
+	ReturnOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ReturnOrderRequest, *ReturnOrderResponse]
 }
 
 type orderServiceClient struct {
@@ -94,6 +98,22 @@ func (c *orderServiceClient) DeliverOrder(opts ...sdk_go.ClientOption) sdk_go.Cl
 	return sdk_go.WithRequestType[*DeliverOrderRequest](sdk_go.Service[*DeliverOrderResponse](c.ctx, "order.sv1.OrderService", "DeliverOrder", cOpts...))
 }
 
+func (c *orderServiceClient) ConfirmOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ConfirmOrderRequest, *ConfirmOrderResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*ConfirmOrderRequest](sdk_go.Service[*ConfirmOrderResponse](c.ctx, "order.sv1.OrderService", "ConfirmOrder", cOpts...))
+}
+
+func (c *orderServiceClient) ReturnOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ReturnOrderRequest, *ReturnOrderResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*ReturnOrderRequest](sdk_go.Service[*ReturnOrderResponse](c.ctx, "order.sv1.OrderService", "ReturnOrder", cOpts...))
+}
+
 // OrderServiceServer is the server API for order.sv1.OrderService service.
 // All implementations should embed UnimplementedOrderServiceServer
 // for forward compatibility.
@@ -109,6 +129,10 @@ type OrderServiceServer interface {
 	ShipOrder(ctx sdk_go.Context, req *ShipOrderRequest) (*ShipOrderResponse, error)
 	// Manually mark order as delivered (move from SHIPPED to DELIVERED)
 	DeliverOrder(ctx sdk_go.Context, req *DeliverOrderRequest) (*DeliverOrderResponse, error)
+	// Confirm order after delivery (move from DELIVERED to COMPLETED)
+	ConfirmOrder(ctx sdk_go.Context, req *ConfirmOrderRequest) (*ConfirmOrderResponse, error)
+	// Return order after delivery (move from DELIVERED to RETURNED with refund)
+	ReturnOrder(ctx sdk_go.Context, req *ReturnOrderRequest) (*ReturnOrderResponse, error)
 }
 
 // UnimplementedOrderServiceServer should be embedded to have
@@ -139,6 +163,12 @@ func (UnimplementedOrderServiceServer) ShipOrder(ctx sdk_go.Context, req *ShipOr
 func (UnimplementedOrderServiceServer) DeliverOrder(ctx sdk_go.Context, req *DeliverOrderRequest) (*DeliverOrderResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method DeliverOrder not implemented"), 501)
 }
+func (UnimplementedOrderServiceServer) ConfirmOrder(ctx sdk_go.Context, req *ConfirmOrderRequest) (*ConfirmOrderResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method ConfirmOrder not implemented"), 501)
+}
+func (UnimplementedOrderServiceServer) ReturnOrder(ctx sdk_go.Context, req *ReturnOrderRequest) (*ReturnOrderResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method ReturnOrder not implemented"), 501)
+}
 func (UnimplementedOrderServiceServer) testEmbeddedByValue() {}
 
 // UnsafeOrderServiceServer may be embedded to opt out of forward compatibility for this service.
@@ -165,5 +195,7 @@ func NewOrderServiceServer(srv OrderServiceServer, opts ...sdk_go.ServiceDefinit
 	router = router.Handler("CancelOrder", sdk_go.NewServiceHandler(srv.CancelOrder))
 	router = router.Handler("ShipOrder", sdk_go.NewServiceHandler(srv.ShipOrder))
 	router = router.Handler("DeliverOrder", sdk_go.NewServiceHandler(srv.DeliverOrder))
+	router = router.Handler("ConfirmOrder", sdk_go.NewServiceHandler(srv.ConfirmOrder))
+	router = router.Handler("ReturnOrder", sdk_go.NewServiceHandler(srv.ReturnOrder))
 	return router
 }
