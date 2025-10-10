@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
@@ -83,10 +84,18 @@ func main() {
 		Handler("ContinueAfterPayment", restate.NewWorkflowHandler(internalorder.ContinueAfterPayment))
 	srv = srv.Bind(orderWorkflow)
 
+	// Bind OrderManagementService as a Virtual Object for order operations
+	orderManagementObject := restate.NewObject("order.sv1.OrderManagementService", restate.WithProtoJSON).
+		Handler("CancelOrder", restate.NewObjectHandler(internalorder.CancelOrder)).
+		Handler("ShipOrder", restate.NewObjectHandler(internalorder.ShipOrder)).
+		Handler("DeliverOrder", restate.NewObjectHandler(internalorder.DeliverOrder))
+	srv = srv.Bind(orderManagementObject)
+
 	// Bind PaymentService as a Virtual Object
 	paymentVirtualObject := restate.NewObject("order.sv1.PaymentService", restate.WithProtoJSON).
 		Handler("ProcessPayment", restate.NewObjectHandler(internalpayment.ProcessPayment)).
-		Handler("MarkPaymentCompleted", restate.NewObjectHandler(internalpayment.MarkPaymentCompleted))
+		Handler("MarkPaymentCompleted", restate.NewObjectHandler(internalpayment.MarkPaymentCompleted)).
+		Handler("ProcessRefund", restate.NewObjectHandler(internalpayment.ProcessRefund))
 	srv = srv.Bind(paymentVirtualObject)
 
 	// Bind ShippingService as a Virtual Object
@@ -100,7 +109,10 @@ func main() {
 		Handler("GetMerchant", restate.NewObjectSharedHandler(internalmerchant.GetMerchant)).
 		Handler("ListItems", restate.NewObjectSharedHandler(internalmerchant.ListItems)).
 		Handler("GetItem", restate.NewObjectSharedHandler(internalmerchant.GetItem)).
-		Handler("UpdateStock", restate.NewObjectHandler(internalmerchant.UpdateStock))
+		Handler("UpdateStock", restate.NewObjectHandler(internalmerchant.UpdateStock)).
+		Handler("AddItem", restate.NewObjectHandler(internalmerchant.AddItem)).
+		Handler("UpdateItem", restate.NewObjectHandler(internalmerchant.UpdateItem)).
+		Handler("DeleteItem", restate.NewObjectHandler(internalmerchant.DeleteItem))
 	srv = srv.Bind(merchantVirtualObject)
 
 	// Start the server on port 9081
@@ -163,7 +175,7 @@ func startWebUIAndAPI() error {
 	mux.HandleFunc("/api/checkout", handleCheckout)
 	mux.HandleFunc("/api/orders", handleOrdersList)
 	mux.HandleFunc("/api/orders/", handleOrders)
-	mux.HandleFunc("/api/merchants/", handleGetMerchantItems)
+	mux.HandleFunc("/api/merchants/", handleMerchantAPI)
 	mux.HandleFunc("/api/debug/fix-orders", handleFixOrders)
 	mux.HandleFunc("/api/webhooks/xendit", handleXenditWebhook)
 
@@ -310,6 +322,123 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/orders/")
 	if path == "" {
 		http.Error(w, "order id required", http.StatusBadRequest)
+		return
+	}
+
+	// Handle ship order endpoint
+	if strings.HasSuffix(path, "/ship") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/ship")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody struct {
+			TrackingNumber string `json:"tracking_number"`
+			Carrier        string `json:"carrier"`
+			ServiceType    string `json:"service_type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		// Set defaults if not provided
+		if reqBody.TrackingNumber == "" {
+			reqBody.TrackingNumber = fmt.Sprintf("TRK%08d", time.Now().Unix()%100000000)
+		}
+		if reqBody.Carrier == "" {
+			reqBody.Carrier = "FedEx"
+		}
+		if reqBody.ServiceType == "" {
+			reqBody.ServiceType = "Ground"
+		}
+
+		// Call Restate ShipOrder endpoint
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		url := fmt.Sprintf("%s/order.sv1.OrderManagementService/%s/ShipOrder", runtimeURL, orderID)
+
+		shipReq := map[string]any{
+			"order_id":        orderID,
+			"tracking_number": reqBody.TrackingNumber,
+			"carrier":         reqBody.Carrier,
+			"service_type":    reqBody.ServiceType,
+		}
+
+		if err := postJSON(url, shipReq); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to ship order", "detail": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order shipped successfully"})
+		return
+	}
+
+	// Handle deliver order endpoint
+	if strings.HasSuffix(path, "/deliver") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/deliver")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+
+		// Call Restate DeliverOrder endpoint
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		url := fmt.Sprintf("%s/order.sv1.OrderManagementService/%s/DeliverOrder", runtimeURL, orderID)
+
+		deliverReq := map[string]any{
+			"order_id": orderID,
+		}
+
+		if err := postJSON(url, deliverReq); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to deliver order", "detail": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order delivered successfully"})
+		return
+	}
+
+	// Handle cancel order endpoint
+	if strings.HasSuffix(path, "/cancel") && r.Method == http.MethodPost {
+		orderID := strings.TrimSuffix(path, "/cancel")
+		if orderID == "" {
+			http.Error(w, "order id required", http.StatusBadRequest)
+			return
+		}
+
+		var reqBody struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+
+		// Call Restate CancelOrder endpoint
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+		url := fmt.Sprintf("%s/order.sv1.OrderManagementService/%s/CancelOrder", runtimeURL, orderID)
+
+		cancelReq := map[string]any{
+			"order_id": orderID,
+			"reason":   reqBody.Reason,
+		}
+
+		if err := postJSON(url, cancelReq); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to cancel order", "detail": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order cancelled successfully"})
 		return
 	}
 
@@ -462,22 +591,44 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 	}, nil
 }
 
-func handleGetMerchantItems(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func handleMerchantAPI(w http.ResponseWriter, r *http.Request) {
+	// Parse URL path: /api/merchants/{merchant_id}/items[/{item_id}]
+	path := strings.TrimPrefix(r.URL.Path, "/api/merchants/")
+	parts := strings.Split(path, "/")
 
-	// /api/merchants/{merchant_id}/items
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/merchants/"), "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] != "items" {
-		http.Error(w, "merchant id required, expected format: /api/merchants/{merchant_id}/items", http.StatusBadRequest)
+		http.Error(w, "invalid path, expected: /api/merchants/{merchant_id}/items[/{item_id}]", http.StatusBadRequest)
 		return
 	}
-	merchantID := parts[0]
 
-	// Call Restate runtime HTTP endpoint directly
+	merchantID := parts[0]
+	itemID := ""
+	if len(parts) > 2 {
+		itemID = parts[2]
+	}
+
 	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+
+	switch r.Method {
+	case http.MethodGet:
+		// GET /api/merchants/{merchant_id}/items - List all items
+		handleListMerchantItems(w, r, runtimeURL, merchantID)
+	case http.MethodPost:
+		// POST /api/merchants/{merchant_id}/items/{item_id} - Add new item
+		handleAddMerchantItem(w, r, runtimeURL, merchantID, itemID)
+	case http.MethodPut:
+		// PUT /api/merchants/{merchant_id}/items/{item_id} - Update existing item
+		handleUpdateMerchantItem(w, r, runtimeURL, merchantID, itemID)
+	case http.MethodDelete:
+		// DELETE /api/merchants/{merchant_id}/items/{item_id} - Delete item
+		handleDeleteMerchantItem(w, r, runtimeURL, merchantID, itemID)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleListMerchantItems(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID string) {
+	// Call Restate runtime HTTP endpoint directly
 	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/ListItems", runtimeURL, merchantID)
 
 	// Create request body for ListItems
@@ -515,6 +666,111 @@ func handleGetMerchantItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func handleAddMerchantItem(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID, itemID string) {
+	var reqBody map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate AddItem endpoint
+	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/AddItem", runtimeURL, merchantID)
+	reqBytes, _ := json.Marshal(reqBody)
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to add merchant item", "detail": detail})
+		return
+	}
+
+	var response map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&response)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func handleUpdateMerchantItem(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID, itemID string) {
+	var reqBody map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate UpdateItem endpoint
+	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/UpdateItem", runtimeURL, merchantID)
+	reqBytes, _ := json.Marshal(reqBody)
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to update merchant item", "detail": detail})
+		return
+	}
+
+	var response map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&response)
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func handleDeleteMerchantItem(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID, itemID string) {
+	if itemID == "" {
+		http.Error(w, "item ID required for deletion", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate DeleteItem endpoint
+	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/DeleteItem", runtimeURL, merchantID)
+	reqBody := map[string]any{
+		"merchant_id": merchantID,
+		"item_id":     itemID,
+	}
+	reqBytes, _ := json.Marshal(reqBody)
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var detail map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&detail)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to delete merchant item", "detail": detail})
+		return
+	}
+
+	var response map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&response)
 	_ = json.NewEncoder(w).Encode(response)
 }
 

@@ -18,6 +18,12 @@ type OrderServiceClient interface {
 	UpdateOrderStatus(opts ...sdk_go.ClientOption) sdk_go.Client[*UpdateOrderStatusRequest, *UpdateOrderStatusResponse]
 	// Continue the order after payment is marked completed
 	ContinueAfterPayment(opts ...sdk_go.ClientOption) sdk_go.Client[*ContinueAfterPaymentRequest, *ContinueAfterPaymentResponse]
+	// Cancel an order with saga pattern (only after payment is completed)
+	CancelOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*CancelOrderRequest, *CancelOrderResponse]
+	// Manually ship an order (move from PROCESSING to SHIPPED)
+	ShipOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ShipOrderRequest, *ShipOrderResponse]
+	// Manually mark order as delivered (move from SHIPPED to DELIVERED)
+	DeliverOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*DeliverOrderRequest, *DeliverOrderResponse]
 }
 
 type orderServiceClient struct {
@@ -64,6 +70,30 @@ func (c *orderServiceClient) ContinueAfterPayment(opts ...sdk_go.ClientOption) s
 	return sdk_go.WithRequestType[*ContinueAfterPaymentRequest](sdk_go.Service[*ContinueAfterPaymentResponse](c.ctx, "order.sv1.OrderService", "ContinueAfterPayment", cOpts...))
 }
 
+func (c *orderServiceClient) CancelOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*CancelOrderRequest, *CancelOrderResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*CancelOrderRequest](sdk_go.Service[*CancelOrderResponse](c.ctx, "order.sv1.OrderService", "CancelOrder", cOpts...))
+}
+
+func (c *orderServiceClient) ShipOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*ShipOrderRequest, *ShipOrderResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*ShipOrderRequest](sdk_go.Service[*ShipOrderResponse](c.ctx, "order.sv1.OrderService", "ShipOrder", cOpts...))
+}
+
+func (c *orderServiceClient) DeliverOrder(opts ...sdk_go.ClientOption) sdk_go.Client[*DeliverOrderRequest, *DeliverOrderResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*DeliverOrderRequest](sdk_go.Service[*DeliverOrderResponse](c.ctx, "order.sv1.OrderService", "DeliverOrder", cOpts...))
+}
+
 // OrderServiceServer is the server API for order.sv1.OrderService service.
 // All implementations should embed UnimplementedOrderServiceServer
 // for forward compatibility.
@@ -73,6 +103,12 @@ type OrderServiceServer interface {
 	UpdateOrderStatus(ctx sdk_go.Context, req *UpdateOrderStatusRequest) (*UpdateOrderStatusResponse, error)
 	// Continue the order after payment is marked completed
 	ContinueAfterPayment(ctx sdk_go.Context, req *ContinueAfterPaymentRequest) (*ContinueAfterPaymentResponse, error)
+	// Cancel an order with saga pattern (only after payment is completed)
+	CancelOrder(ctx sdk_go.Context, req *CancelOrderRequest) (*CancelOrderResponse, error)
+	// Manually ship an order (move from PROCESSING to SHIPPED)
+	ShipOrder(ctx sdk_go.Context, req *ShipOrderRequest) (*ShipOrderResponse, error)
+	// Manually mark order as delivered (move from SHIPPED to DELIVERED)
+	DeliverOrder(ctx sdk_go.Context, req *DeliverOrderRequest) (*DeliverOrderResponse, error)
 }
 
 // UnimplementedOrderServiceServer should be embedded to have
@@ -93,6 +129,15 @@ func (UnimplementedOrderServiceServer) UpdateOrderStatus(ctx sdk_go.Context, req
 }
 func (UnimplementedOrderServiceServer) ContinueAfterPayment(ctx sdk_go.Context, req *ContinueAfterPaymentRequest) (*ContinueAfterPaymentResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method ContinueAfterPayment not implemented"), 501)
+}
+func (UnimplementedOrderServiceServer) CancelOrder(ctx sdk_go.Context, req *CancelOrderRequest) (*CancelOrderResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method CancelOrder not implemented"), 501)
+}
+func (UnimplementedOrderServiceServer) ShipOrder(ctx sdk_go.Context, req *ShipOrderRequest) (*ShipOrderResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method ShipOrder not implemented"), 501)
+}
+func (UnimplementedOrderServiceServer) DeliverOrder(ctx sdk_go.Context, req *DeliverOrderRequest) (*DeliverOrderResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method DeliverOrder not implemented"), 501)
 }
 func (UnimplementedOrderServiceServer) testEmbeddedByValue() {}
 
@@ -117,5 +162,8 @@ func NewOrderServiceServer(srv OrderServiceServer, opts ...sdk_go.ServiceDefinit
 	router = router.Handler("GetOrder", sdk_go.NewServiceHandler(srv.GetOrder))
 	router = router.Handler("UpdateOrderStatus", sdk_go.NewServiceHandler(srv.UpdateOrderStatus))
 	router = router.Handler("ContinueAfterPayment", sdk_go.NewServiceHandler(srv.ContinueAfterPayment))
+	router = router.Handler("CancelOrder", sdk_go.NewServiceHandler(srv.CancelOrder))
+	router = router.Handler("ShipOrder", sdk_go.NewServiceHandler(srv.ShipOrder))
+	router = router.Handler("DeliverOrder", sdk_go.NewServiceHandler(srv.DeliverOrder))
 	return router
 }

@@ -17,6 +17,9 @@ type MerchantServiceClient interface {
 	ListItems(opts ...sdk_go.ClientOption) sdk_go.Client[*ListItemsRequest, *ListItemsResponse]
 	GetItem(opts ...sdk_go.ClientOption) sdk_go.Client[*GetItemRequest, *Item]
 	UpdateStock(opts ...sdk_go.ClientOption) sdk_go.Client[*UpdateStockRequest, *UpdateStockResponse]
+	AddItem(opts ...sdk_go.ClientOption) sdk_go.Client[*AddItemRequest, *AddItemResponse]
+	UpdateItem(opts ...sdk_go.ClientOption) sdk_go.Client[*UpdateItemRequest, *UpdateItemResponse]
+	DeleteItem(opts ...sdk_go.ClientOption) sdk_go.Client[*DeleteItemRequest, *DeleteItemResponse]
 }
 
 type merchantServiceClient struct {
@@ -63,6 +66,30 @@ func (c *merchantServiceClient) UpdateStock(opts ...sdk_go.ClientOption) sdk_go.
 	return sdk_go.WithRequestType[*UpdateStockRequest](sdk_go.Service[*UpdateStockResponse](c.ctx, "merchant.sv1.MerchantService", "UpdateStock", cOpts...))
 }
 
+func (c *merchantServiceClient) AddItem(opts ...sdk_go.ClientOption) sdk_go.Client[*AddItemRequest, *AddItemResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*AddItemRequest](sdk_go.Service[*AddItemResponse](c.ctx, "merchant.sv1.MerchantService", "AddItem", cOpts...))
+}
+
+func (c *merchantServiceClient) UpdateItem(opts ...sdk_go.ClientOption) sdk_go.Client[*UpdateItemRequest, *UpdateItemResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*UpdateItemRequest](sdk_go.Service[*UpdateItemResponse](c.ctx, "merchant.sv1.MerchantService", "UpdateItem", cOpts...))
+}
+
+func (c *merchantServiceClient) DeleteItem(opts ...sdk_go.ClientOption) sdk_go.Client[*DeleteItemRequest, *DeleteItemResponse] {
+	cOpts := c.options
+	if len(opts) > 0 {
+		cOpts = append(append([]sdk_go.ClientOption{}, cOpts...), opts...)
+	}
+	return sdk_go.WithRequestType[*DeleteItemRequest](sdk_go.Service[*DeleteItemResponse](c.ctx, "merchant.sv1.MerchantService", "DeleteItem", cOpts...))
+}
+
 // MerchantServiceServer is the server API for merchant.sv1.MerchantService service.
 // All implementations should embed UnimplementedMerchantServiceServer
 // for forward compatibility.
@@ -71,6 +98,9 @@ type MerchantServiceServer interface {
 	ListItems(ctx sdk_go.Context, req *ListItemsRequest) (*ListItemsResponse, error)
 	GetItem(ctx sdk_go.Context, req *GetItemRequest) (*Item, error)
 	UpdateStock(ctx sdk_go.Context, req *UpdateStockRequest) (*UpdateStockResponse, error)
+	AddItem(ctx sdk_go.Context, req *AddItemRequest) (*AddItemResponse, error)
+	UpdateItem(ctx sdk_go.Context, req *UpdateItemRequest) (*UpdateItemResponse, error)
+	DeleteItem(ctx sdk_go.Context, req *DeleteItemRequest) (*DeleteItemResponse, error)
 }
 
 // UnimplementedMerchantServiceServer should be embedded to have
@@ -91,6 +121,15 @@ func (UnimplementedMerchantServiceServer) GetItem(ctx sdk_go.Context, req *GetIt
 }
 func (UnimplementedMerchantServiceServer) UpdateStock(ctx sdk_go.Context, req *UpdateStockRequest) (*UpdateStockResponse, error) {
 	return nil, sdk_go.TerminalError(fmt.Errorf("method UpdateStock not implemented"), 501)
+}
+func (UnimplementedMerchantServiceServer) AddItem(ctx sdk_go.Context, req *AddItemRequest) (*AddItemResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method AddItem not implemented"), 501)
+}
+func (UnimplementedMerchantServiceServer) UpdateItem(ctx sdk_go.Context, req *UpdateItemRequest) (*UpdateItemResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method UpdateItem not implemented"), 501)
+}
+func (UnimplementedMerchantServiceServer) DeleteItem(ctx sdk_go.Context, req *DeleteItemRequest) (*DeleteItemResponse, error) {
+	return nil, sdk_go.TerminalError(fmt.Errorf("method DeleteItem not implemented"), 501)
 }
 func (UnimplementedMerchantServiceServer) testEmbeddedByValue() {}
 
@@ -115,5 +154,8 @@ func NewMerchantServiceServer(srv MerchantServiceServer, opts ...sdk_go.ServiceD
 	router = router.Handler("ListItems", sdk_go.NewServiceHandler(srv.ListItems))
 	router = router.Handler("GetItem", sdk_go.NewServiceHandler(srv.GetItem))
 	router = router.Handler("UpdateStock", sdk_go.NewServiceHandler(srv.UpdateStock))
+	router = router.Handler("AddItem", sdk_go.NewServiceHandler(srv.AddItem))
+	router = router.Handler("UpdateItem", sdk_go.NewServiceHandler(srv.UpdateItem))
+	router = router.Handler("DeleteItem", sdk_go.NewServiceHandler(srv.DeleteItem))
 	return router
 }

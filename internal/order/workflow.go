@@ -1,10 +1,12 @@
 package order
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"time"
 
+	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
@@ -12,17 +14,82 @@ import (
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 )
 
+// StockValidationError represents a non-retryable stock validation error
+type StockValidationError struct {
+	ItemID    string
+	Requested int32
+	Available int32
+	Message   string
+}
+
+func (e *StockValidationError) Error() string {
+	return e.Message
+}
+
+// IsTerminalError indicates this is a terminal error that should not be retried
+func (e *StockValidationError) IsTerminalError() bool {
+	return true
+}
+
 // CreateOrder orchestrates the order process
 func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (*orderpb.CreateOrderResponse, error) {
 	orderId := restate.Key(ctx)
 	log.Printf("[Workflow %s] Creating order for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
 
+	// Step 1: Validate stock availability and calculate total amount
+	log.Printf("[Workflow %s] Step 1: Validating stock availability", orderId)
 	var totalAmount float64
 	for _, item := range req.Items {
-		_ = item // For now assume price lookup external; using placeholder $1 per qty unit
-		totalAmount += float64(item.Quantity) * 1
+		// Get item details from merchant service to calculate proper total
+		// We need to use the proper protobuf message type for the request
+		merchantClient := restate.Object[*merchantpb.Item](ctx, "merchant.sv1.MerchantService", req.MerchantId, "GetItem")
+
+		// Create proper protobuf request using the generated types
+		itemReq := &merchantpb.GetItemRequest{
+			MerchantId: req.MerchantId,
+			ItemId:     item.ProductId,
+		}
+
+		itemProto, err := merchantClient.Request(itemReq)
+		if err != nil {
+			log.Printf("[Workflow %s] Item %s not found: %v", orderId, item.ProductId, err)
+			return nil, &StockValidationError{
+				ItemID:    item.ProductId,
+				Requested: item.Quantity,
+				Available: 0,
+				Message:   fmt.Sprintf("Item '%s' not found or unavailable", item.ProductId),
+			}
+		}
+
+		// Check stock availability
+		if itemProto.Quantity < item.Quantity {
+			return nil, &StockValidationError{
+				ItemID:    item.ProductId,
+				Requested: item.Quantity,
+				Available: itemProto.Quantity,
+				Message: fmt.Sprintf("Insufficient stock for item '%s': requested %d, available %d",
+					itemProto.Name, item.Quantity, itemProto.Quantity),
+			}
+		}
+
+		totalAmount += float64(item.Quantity) * itemProto.Price
+		log.Printf("[Workflow %s] Item %s validated: price=%.2f, stock=%d, quantity=%d",
+			orderId, item.ProductId, itemProto.Price, itemProto.Quantity, item.Quantity)
 	}
 
+	log.Printf("[Workflow %s] Stock validation passed, total amount: %.2f", orderId, totalAmount)
+
+	// Step 2: Deduct stock from inventory (using database transaction)
+	log.Printf("[Workflow %s] Step 2: Deducting stock from inventory", orderId)
+	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.DeductStockFromItems(req.MerchantId, req.Items)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to deduct stock: %w", err)
+	}
+
+	// Step 3: Create order in database
+	log.Printf("[Workflow %s] Step 3: Creating order in database", orderId)
 	restate.Set(ctx, "customer_id", req.CustomerId)
 	restate.Set(ctx, "status", orderpb.OrderStatus_PENDING)
 	restate.Set(ctx, "total_amount", totalAmount)
@@ -30,7 +97,7 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 		restate.Set(ctx, "merchant_id", req.MerchantId)
 	}
 
-	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		log.Printf("[Workflow %s] Persisting order and items to database", orderId)
 		if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
 			return nil, err
@@ -38,6 +105,14 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 		return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
 	})
 	if err != nil {
+		// If order creation fails, we need to restore the deducted stock
+		log.Printf("[Workflow %s] Order creation failed, restoring stock", orderId)
+		_, restoreErr := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.RestoreStockToItems(req.MerchantId, req.Items)
+		})
+		if restoreErr != nil {
+			log.Printf("[Workflow %s] CRITICAL: Failed to restore stock after order creation failure: %v", orderId, restoreErr)
+		}
 		return nil, fmt.Errorf("failed to persist order to database: %w", err)
 	}
 
@@ -116,7 +191,7 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 	// After sleep interruption (payment completion), continue to shipping
 	log.Printf("[Workflow %s] Payment completed, proceeding to shipping", orderId)
 
-	// Mark order as PROCESSING (payment completed)
+	// Mark order as PROCESSING (payment completed) - stop here for manual processing
 	restate.Set(ctx, "status", orderpb.OrderStatus_PROCESSING)
 	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_PROCESSING)
@@ -125,58 +200,7 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 		log.Printf("[Workflow %s] Warning: Failed to set PROCESSING: %v", orderId, err)
 	}
 
-	// Proceed to shipment
-	if err := restate.Sleep(ctx, 5*time.Second); err != nil {
-		return nil, err
-	}
-	// Use Restate's deterministic random for shipment ID to ensure workflow determinism
-	shipmentId := restate.Rand(ctx).UUID().String()
-	shipmentReq := &orderpb.CreateShipmentRequest{
-		OrderId: orderId,
-		ShippingAddress: &orderpb.ShippingAddress{
-			Street: "123 Main St", City: "San Francisco", State: "CA",
-			PostalCode: "94105", Country: "USA", RecipientName: "Customer",
-		},
-		ShippingMethod: &orderpb.ShippingMethod{
-			Carrier: "FedEx", ServiceType: "Ground", Cost: 15.0, EstimatedDays: 5,
-		},
-	}
-	log.Printf("[Workflow %s] Creating shipment after payment", orderId)
-	shippingClient := restate.Object[*orderpb.CreateShipmentResponse](ctx, "order.sv1.ShippingService", shipmentId, "CreateShipment", restate.WithProtoJSON)
-	shipmentResp, err := shippingClient.Request(shipmentReq)
-	if err != nil {
-		return nil, fmt.Errorf("shipment creation failed: %w", err)
-	}
-
-	restate.Set(ctx, "shipment_id", shipmentResp.ShipmentId)
-	restate.Set(ctx, "tracking_number", shipmentResp.TrackingNumber)
-	restate.Set(ctx, "estimated_delivery", shipmentResp.EstimatedDelivery)
-	restate.Set(ctx, "current_location", "In Transit")
-	restate.Set(ctx, "status", orderpb.OrderStatus_SHIPPED)
-
-	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		if err := postgres.UpdateOrderShipment(orderId, shipmentResp.ShipmentId, shipmentResp.TrackingNumber); err != nil {
-			return nil, err
-		}
-		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_SHIPPED)
-	})
-	if err != nil {
-		log.Printf("[Workflow %s] Warning: Failed to update shipment in database: %v", orderId, err)
-	}
-
-	if err := restate.Sleep(ctx, 10*time.Second); err != nil {
-		return nil, err
-	}
-	restate.Set(ctx, "status", orderpb.OrderStatus_DELIVERED)
-	restate.Set(ctx, "current_location", "Delivered")
-	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_DELIVERED)
-	})
-	if err != nil {
-		log.Printf("[Workflow %s] Warning: Failed to update final status in database: %v", orderId, err)
-	}
-
-	log.Printf("[Workflow %s] Order completed successfully", orderId)
+	log.Printf("[Workflow %s] Order processing completed - waiting for manual status updates", orderId)
 	return &orderpb.CreateOrderResponse{OrderId: orderId, InvoiceUrl: paymentResp.InvoiceUrl}, nil
 }
 
@@ -257,6 +281,353 @@ func ContinueAfterPayment(ctx restate.WorkflowContext, req *orderpb.ContinueAfte
 	log.Printf("[Workflow %s] Awakeable resolved, workflow will continue", orderId)
 
 	return &orderpb.ContinueAfterPaymentResponse{Ok: true}, nil
+}
+
+// CancelOrder implements a saga pattern for order cancellation with compensation
+func CancelOrder(ctx restate.ObjectContext, req *orderpb.CancelOrderRequest) (*orderpb.CancelOrderResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Starting order cancellation saga for reason: %s", orderId, req.Reason)
+
+	// Check current order status
+	status, err := restate.Get[orderpb.OrderStatus](ctx, "status")
+	if err != nil {
+		return nil, fmt.Errorf("order not found: %w", err)
+	}
+
+	// Only allow cancellation for orders that are not already delivered
+	if status == orderpb.OrderStatus_DELIVERED {
+		return &orderpb.CancelOrderResponse{
+			Success: false,
+			Message: "Cannot cancel order that has already been delivered",
+		}, nil
+	}
+
+	if status == orderpb.OrderStatus_CANCELLED {
+		return &orderpb.CancelOrderResponse{
+			Success: true,
+			Message: "Order already cancelled",
+		}, nil
+	}
+
+	// Get order details for compensation
+	paymentId, _ := restate.Get[string](ctx, "payment_id")
+	totalAmount, _ := restate.Get[float64](ctx, "total_amount")
+	paymentStatus, _ := restate.Get[orderpb.PaymentStatus](ctx, "payment_status")
+
+	// Get merchant_id from database instead of workflow state
+	var merchantId string
+	if postgres.DB != nil {
+		var nullableMerchantId sql.NullString
+		err := postgres.DB.QueryRow(`SELECT merchant_id FROM orders WHERE id = $1`, orderId).Scan(&nullableMerchantId)
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to get merchant_id from database: %v", orderId, err)
+			// Fallback to workflow state
+			merchantId, _ = restate.Get[string](ctx, "merchant_id")
+		} else if nullableMerchantId.Valid {
+			merchantId = nullableMerchantId.String
+		} else {
+			log.Printf("[Workflow %s] Warning: merchant_id is NULL in database, trying workflow state", orderId)
+			// Fallback to workflow state if database value is NULL
+			merchantId, _ = restate.Get[string](ctx, "merchant_id")
+		}
+	} else {
+		// Fallback to workflow state if database is not available
+		merchantId, _ = restate.Get[string](ctx, "merchant_id")
+	}
+
+	if merchantId == "" {
+		return nil, fmt.Errorf("missing merchant_id for cancellation")
+	}
+
+	log.Printf("[Workflow %s] Order details - Merchant: %s, Payment: %s, Amount: %.2f, Payment Status: %v",
+		orderId, merchantId, paymentId, totalAmount, paymentStatus)
+
+	var refundId string
+
+	// Step 1: Process refund only if payment was completed
+	if status == orderpb.OrderStatus_PROCESSING || status == orderpb.OrderStatus_SHIPPED {
+		if paymentId == "" {
+			return nil, fmt.Errorf("payment_id required for refund processing")
+		}
+
+		log.Printf("[Workflow %s] Step 1: Processing refund for paid order", orderId)
+		refundClient := restate.Object[*orderpb.ProcessRefundResponse](ctx, "order.sv1.PaymentService", paymentId, "ProcessRefund")
+		refundReq := &orderpb.ProcessRefundRequest{
+			PaymentId: paymentId,
+			OrderId:   orderId,
+			Amount:    totalAmount,
+			Reason:    req.Reason,
+		}
+
+		refundResp, err := refundClient.Request(refundReq)
+		if err != nil {
+			log.Printf("[Workflow %s] Refund failed: %v", orderId, err)
+			return &orderpb.CancelOrderResponse{
+				Success: false,
+				Message: fmt.Sprintf("Refund failed: %v", err),
+			}, nil
+		}
+
+		refundId = refundResp.RefundId
+		log.Printf("[Workflow %s] Refund processed successfully: %s", orderId, refundId)
+	} else {
+		log.Printf("[Workflow %s] No refund needed for order status: %v", orderId, status)
+	}
+
+	// Step 2: Restore stock to merchant inventory (compensation)
+	log.Printf("[Workflow %s] Step 2: Restoring stock to inventory", orderId)
+
+	// Get order items from database for stock restoration
+	var orderItems []*orderpb.OrderItems
+	if postgres.DB != nil {
+		rows, err := postgres.DB.Query(`
+			SELECT item_id, quantity 
+			FROM order_items 
+			WHERE order_id = $1 AND merchant_id = $2
+		`, orderId, merchantId)
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to get order items for stock restoration: %v", orderId, err)
+		} else {
+			defer rows.Close()
+			for rows.Next() {
+				var item orderpb.OrderItems
+				if err := rows.Scan(&item.ProductId, &item.Quantity); err == nil {
+					orderItems = append(orderItems, &item)
+				}
+			}
+		}
+	} else {
+		log.Printf("[Workflow %s] Warning: Database not available for stock restoration", orderId)
+	}
+
+	if len(orderItems) > 0 {
+		_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.RestoreStockToItems(merchantId, orderItems)
+		})
+		if err != nil {
+			log.Printf("[Workflow %s] CRITICAL: Failed to restore stock during cancellation: %v", orderId, err)
+			// This is a critical error - the refund was processed but stock wasn't restored
+			// In a real system, this would require manual intervention
+		} else {
+			log.Printf("[Workflow %s] Stock restored successfully for %d items", orderId, len(orderItems))
+		}
+	} else {
+		log.Printf("[Workflow %s] Warning: No order items found for stock restoration", orderId)
+	}
+
+	// Step 3: Update order status to CANCELLED
+	log.Printf("[Workflow %s] Step 3: Updating order status to CANCELLED", orderId)
+	restate.Set(ctx, "status", orderpb.OrderStatus_CANCELLED)
+	restate.Set(ctx, "cancellation_reason", req.Reason)
+	if refundId != "" {
+		restate.Set(ctx, "refund_id", refundId)
+	}
+
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_CANCELLED)
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update order status in database: %v", orderId, err)
+	}
+
+	log.Printf("[Workflow %s] Order cancellation saga completed successfully", orderId)
+
+	message := "Order cancelled successfully with stock restored"
+	if refundId != "" {
+		message += fmt.Sprintf(" (Refund ID: %s)", refundId)
+	}
+
+	return &orderpb.CancelOrderResponse{
+		Success:  true,
+		Message:  message,
+		RefundId: refundId,
+	}, nil
+}
+
+// ShipOrder initiates shipping and triggers automatic delivery simulation
+func ShipOrder(ctx restate.ObjectContext, req *orderpb.ShipOrderRequest) (*orderpb.ShipOrderResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Starting shipping process", orderId)
+
+	// Debug: Check if database is connected and list all orders
+	if postgres.DB == nil {
+		log.Printf("[Workflow %s] ERROR: Database connection is nil", orderId)
+		return &orderpb.ShipOrderResponse{
+			Success: false,
+			Message: "Database not connected",
+		}, nil
+	}
+
+	// Test database connection
+	if err := postgres.DB.Ping(); err != nil {
+		log.Printf("[Workflow %s] ERROR: Database ping failed: %v", orderId, err)
+		return &orderpb.ShipOrderResponse{
+			Success: false,
+			Message: "Database connection failed",
+		}, nil
+	}
+	log.Printf("[Workflow %s] Database connection verified", orderId)
+
+	// Debug: List all orders to see what's in the database
+	rows, err := postgres.DB.Query(`SELECT id, status FROM orders ORDER BY created_at DESC LIMIT 5`)
+	if err == nil {
+		log.Printf("[Workflow %s] Recent orders in database:", orderId)
+		for rows.Next() {
+			var id, status string
+			if err := rows.Scan(&id, &status); err == nil {
+				log.Printf("[Workflow %s] Order: %s, Status: %s", orderId, id, status)
+			}
+		}
+		rows.Close()
+	}
+
+	// Get current order status from database since this is an object handler
+	var currentStatus string
+	err = postgres.DB.QueryRow(`SELECT status FROM orders WHERE id = $1`, orderId).Scan(&currentStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("[Workflow %s] Order not found in database", orderId)
+			return &orderpb.ShipOrderResponse{
+				Success: false,
+				Message: "Order not found",
+			}, nil
+		}
+		log.Printf("[Workflow %s] Database error getting order status: %v", orderId, err)
+		return nil, fmt.Errorf("failed to get order status: %w", err)
+	}
+	log.Printf("[Workflow %s] Current order status from database: %s", orderId, currentStatus)
+
+	// Convert string status to enum
+	var status orderpb.OrderStatus
+	switch currentStatus {
+	case "PENDING":
+		status = orderpb.OrderStatus_PENDING
+	case "PROCESSING":
+		status = orderpb.OrderStatus_PROCESSING
+	case "SHIPPED":
+		status = orderpb.OrderStatus_SHIPPED
+	case "DELIVERED":
+		status = orderpb.OrderStatus_DELIVERED
+	case "CANCELLED":
+		status = orderpb.OrderStatus_CANCELLED
+	default:
+		return &orderpb.ShipOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Unknown order status: %s", currentStatus),
+		}, nil
+	}
+
+	if status != orderpb.OrderStatus_PROCESSING {
+		return &orderpb.ShipOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Order must be in PROCESSING status to ship, current status: %s", currentStatus),
+		}, nil
+	}
+
+	// Generate shipment ID
+	shipmentId := restate.Rand(ctx).UUID().String()
+	log.Printf("[Workflow %s] Generated shipment ID: %s", orderId, shipmentId)
+
+	// Update the database using restate.Run to ensure proper transaction handling
+	// ALL database operations must be inside restate.Run to persist properly
+	log.Printf("[Workflow %s] Updating database in restate.Run context", orderId)
+
+	// Compute an ISO-8601 date for estimated delivery to satisfy DATE column type
+	estimatedDeliveryDate := time.Now().AddDate(0, 0, 5).Format("2006-01-02")
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		// Create shipment record
+		if err := postgres.InsertShipment(
+			shipmentId, orderId, req.TrackingNumber, req.Carrier, req.ServiceType,
+			orderpb.ShipmentStatus_SHIPMENT_IN_TRANSIT, "Warehouse", estimatedDeliveryDate,
+		); err != nil {
+			log.Printf("[Workflow %s] Failed to create shipment: %v", orderId, err)
+			return nil, err
+		}
+		log.Printf("[Workflow %s] Shipment record created", orderId)
+
+		// Update shipment info in orders table
+		if err := postgres.UpdateOrderShipment(orderId, shipmentId, req.TrackingNumber); err != nil {
+			log.Printf("[Workflow %s] Failed to update order shipment: %v", orderId, err)
+			return nil, err
+		}
+		log.Printf("[Workflow %s] Order shipment info updated", orderId)
+
+		// Update order status to SHIPPED
+		if err := postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_SHIPPED); err != nil {
+			log.Printf("[Workflow %s] Failed to update status: %v", orderId, err)
+			return nil, err
+		}
+		log.Printf("[Workflow %s] Order status updated to SHIPPED", orderId)
+
+		return nil, nil
+	})
+
+	if err != nil {
+		log.Printf("[Workflow %s] CRITICAL: Database update failed: %v", orderId, err)
+		return &orderpb.ShipOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to update database: %v", err),
+		}, nil
+	}
+
+	log.Printf("[Workflow %s] Successfully shipped order", orderId)
+
+	log.Printf("[Workflow %s] Order shipped successfully", orderId)
+	return &orderpb.ShipOrderResponse{
+		Success:    true,
+		Message:    "Order shipped successfully",
+		ShipmentId: shipmentId,
+	}, nil
+}
+
+// DeliverOrder manually moves an order from SHIPPED to DELIVERED status
+func DeliverOrder(ctx restate.ObjectContext, req *orderpb.DeliverOrderRequest) (*orderpb.DeliverOrderResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Manually delivering order", orderId)
+
+	// Get current order status from database (object handlers can't access workflow state)
+	var currentStatus string
+	var shipmentId sql.NullString
+	err := postgres.DB.QueryRow(`SELECT status, shipment_id FROM orders WHERE id = $1`, orderId).Scan(&currentStatus, &shipmentId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &orderpb.DeliverOrderResponse{
+				Success: false,
+				Message: "Order not found",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get order: %w", err)
+	}
+
+	if currentStatus != "SHIPPED" {
+		return &orderpb.DeliverOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Order must be in SHIPPED status to deliver, current status: %s", currentStatus),
+		}, nil
+	}
+
+	// Update order status to DELIVERED in database
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		// Update shipment status to delivered if we have a shipment ID
+		if shipmentId.Valid && shipmentId.String != "" {
+			if err := postgres.UpdateShipmentStatus(shipmentId.String, orderpb.ShipmentStatus_SHIPMENT_DELIVERED, "Delivered"); err != nil {
+				log.Printf("[Workflow %s] Warning: Failed to update shipment status: %v", orderId, err)
+			}
+		}
+		return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_DELIVERED)
+	})
+	if err != nil {
+		return &orderpb.DeliverOrderResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to update order status: %v", err),
+		}, nil
+	}
+
+	log.Printf("[Workflow %s] Order delivered successfully", orderId)
+	return &orderpb.DeliverOrderResponse{
+		Success: true,
+		Message: "Order delivered successfully",
+	}, nil
 }
 
 // Keep a tiny server import linker reference to avoid unused import errors when building only package

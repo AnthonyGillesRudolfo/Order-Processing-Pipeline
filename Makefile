@@ -24,9 +24,14 @@ proto:
 	  common.proto order_service.proto payment_service.proto shipping_service.proto merchant.proto
 # Run your app
 run: db-env
-	ORDER_DB_HOST=$(ORDER_DB_HOST) ORDER_DB_PORT=$(ORDER_DB_PORT) ORDER_DB_NAME=$(ORDER_DB_NAME) ORDER_DB_USER=$(ORDER_DB_USER) ORDER_DB_PASSWORD=$(ORDER_DB_PASSWORD) \
+	unset PGREQUIRESSL && \
+	PGSSLMODE=disable \
+	ORDER_DB_HOST=$(ORDER_DB_HOST) \
+	ORDER_DB_PORT=$(ORDER_DB_PORT) \
+	ORDER_DB_NAME=$(ORDER_DB_NAME) \
+	ORDER_DB_USER=$(ORDER_DB_USER) \
+	ORDER_DB_PASSWORD=$(ORDER_DB_PASSWORD) \
 	go run ./cmd/server
-
 # Simple SQL-based migrations using psql (legacy)
 migrate-up:
 	@[ -f db/migrations/000001_init_core.up.sql ] || (echo "No up migration found" && exit 1)

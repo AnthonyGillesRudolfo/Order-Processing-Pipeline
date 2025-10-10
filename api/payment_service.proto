@@ -49,10 +49,25 @@ message DigitalWallet {
   string provider = 2;
 }
 
+message ProcessRefundRequest {
+  string payment_id = 1;
+  string order_id = 2;
+  double amount = 3; // Full or partial refund amount
+  string reason = 4; // Refund reason
+}
+
+message ProcessRefundResponse {
+  string refund_id = 1;
+  string status = 2; // "pending", "completed", "failed"
+  string message = 3;
+}
+
 service PaymentService {
   rpc ProcessPayment(ProcessPaymentRequest) returns (ProcessPaymentResponse);
   // Simulate marking a payment as completed (no real capture). Idempotent.
   rpc MarkPaymentCompleted(MarkPaymentCompletedRequest) returns (MarkPaymentCompletedResponse);
+  // Process refund for a completed payment
+  rpc ProcessRefund(ProcessRefundRequest) returns (ProcessRefundResponse);
 }
 
 message MarkPaymentCompletedRequest {
