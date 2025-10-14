@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	internalap2 "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/ap2"
+	internalcart "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/cart"
 	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
@@ -118,6 +120,16 @@ func main() {
 		Handler("DeleteItem", restate.NewObjectHandler(internalmerchant.DeleteItem))
 	srv = srv.Bind(merchantVirtualObject)
 
+	// Bind CartService as a Virtual Object
+	cartVirtualObject := restate.NewObject("cart.sv1.CartService").
+		Handler("AddToCart", restate.NewObjectHandler(internalcart.AddToCart)).
+		Handler("ViewCart", restate.NewObjectSharedHandler(internalcart.ViewCart)).
+		Handler("UpdateCartItem", restate.NewObjectHandler(internalcart.UpdateCartItem)).
+		Handler("RemoveFromCart", restate.NewObjectHandler(internalcart.RemoveFromCart)).
+		Handler("ClearCart", restate.NewObjectHandler(internalcart.ClearCart)).
+		Handler("GetCart", restate.NewObjectSharedHandler(internalcart.GetCart))
+	srv = srv.Bind(cartVirtualObject)
+
 	// Start the server on port 9081
 	log.Println("Restate server listening on :9081")
 	log.Println("")
@@ -126,6 +138,8 @@ func main() {
 	log.Println("  - PaymentService: VIRTUAL OBJECT (keyed by payment ID)")
 	log.Println("  - ShippingService: VIRTUAL OBJECT (keyed by shipment ID)")
 	log.Println("  - MerchantService: VIRTUAL OBJECT (keyed by merchant ID)")
+	log.Println("  - CartService: VIRTUAL OBJECT (keyed by customer ID)")
+	log.Println("  - AP2 Endpoints: HTTP API (/ap2/mandates, /ap2/intents, /ap2/authorize, /ap2/execute, /ap2/refunds)")
 	log.Println("")
 	log.Println("Register with Restate:")
 	log.Println("  restate deployments register http://localhost:9081")
@@ -179,8 +193,18 @@ func startWebUIAndAPI() error {
 	mux.HandleFunc("/api/orders", handleOrdersList)
 	mux.HandleFunc("/api/orders/", handleOrders)
 	mux.HandleFunc("/api/merchants/", handleMerchantAPI)
+	mux.HandleFunc("/api/cart/", handleCartAPI)
 	mux.HandleFunc("/api/debug/fix-orders", handleFixOrders)
 	mux.HandleFunc("/api/webhooks/xendit", handleXenditWebhook)
+
+	// AP2 Endpoints
+	mux.HandleFunc("/ap2/mandates", internalap2.HandleCreateMandate)
+	mux.HandleFunc("/ap2/mandates/", internalap2.HandleGetMandate)
+	mux.HandleFunc("/ap2/intents", internalap2.HandleCreateIntent)
+	mux.HandleFunc("/ap2/authorize", internalap2.HandleAuthorize)
+	mux.HandleFunc("/ap2/execute", internalap2.HandleExecute)
+	mux.HandleFunc("/ap2/refunds", internalap2.HandleRefund)
+	mux.HandleFunc("/ap2/refunds/", internalap2.HandleGetRefund)
 
 	log.Println("Web UI available on :3000 (serving ./web)")
 	return http.ListenAndServe(":3000", withCORS(mux))
@@ -672,6 +696,189 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 			"invoice_url": invoiceURL,
 		},
 	}, nil
+}
+
+// Cart API handlers
+func handleCartAPI(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/cart/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) < 2 {
+		http.Error(w, "Invalid cart API path", http.StatusBadRequest)
+		return
+	}
+
+	customerID := parts[0]
+	action := parts[1]
+
+	switch action {
+	case "add":
+		handleCartAdd(w, r, customerID)
+	case "view":
+		handleCartView(w, r, customerID)
+	case "update":
+		handleCartUpdate(w, r, customerID)
+	case "remove":
+		handleCartRemove(w, r, customerID)
+	default:
+		http.Error(w, "Unknown cart action", http.StatusBadRequest)
+	}
+}
+
+func handleCartAdd(w http.ResponseWriter, r *http.Request, customerID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+		MerchantID string `json:"merchant_id"`
+		Items      []struct {
+			ProductID string `json:"product_id"`
+			Quantity  int32  `json:"quantity"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate cart service
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/cart.sv1.CartService/%s/AddToCart", runtimeURL, customerID)
+
+	reqBytes, _ := json.Marshal(req)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reach Restate runtime"})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleCartView(w http.ResponseWriter, r *http.Request, customerID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate cart service
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/cart.sv1.CartService/%s/ViewCart", runtimeURL, customerID)
+
+	reqBytes, _ := json.Marshal(req)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reach Restate runtime"})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleCartUpdate(w http.ResponseWriter, r *http.Request, customerID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CustomerID string `json:"customer_id"`
+		ProductID  string `json:"product_id"`
+		Quantity   int32  `json:"quantity"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate cart service
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/cart.sv1.CartService/%s/UpdateCartItem", runtimeURL, customerID)
+
+	reqBytes, _ := json.Marshal(req)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reach Restate runtime"})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	json.NewEncoder(w).Encode(result)
+}
+
+func handleCartRemove(w http.ResponseWriter, r *http.Request, customerID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		CustomerID string   `json:"customer_id"`
+		ProductIDs []string `json:"product_ids"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Call Restate cart service
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+	url := fmt.Sprintf("%s/cart.sv1.CartService/%s/RemoveFromCart", runtimeURL, customerID)
+
+	reqBytes, _ := json.Marshal(req)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to reach Restate runtime"})
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	json.NewEncoder(w).Encode(result)
 }
 
 func handleMerchantAPI(w http.ResponseWriter, r *http.Request) {

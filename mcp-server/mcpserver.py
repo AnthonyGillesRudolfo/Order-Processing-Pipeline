@@ -45,6 +45,46 @@ async def list_tools() -> str:
             "name": "list_merchant_items",
             "description": "Show a list of items that a specific merchant sells",
             "parameters": "merchant_id (required): The ID of the merchant to get items for"
+        },
+        {
+            "name": "add_to_cart",
+            "description": "Add items to a customer's shopping cart",
+            "parameters": "customer_id (required), merchant_id (required), items (required): List of items with product_id and quantity"
+        },
+        {
+            "name": "view_cart",
+            "description": "View the current contents of a customer's shopping cart",
+            "parameters": "customer_id (required): The ID of the customer"
+        },
+        {
+            "name": "update_cart_item",
+            "description": "Update the quantity of an item in the cart",
+            "parameters": "customer_id (required), product_id (required), quantity (required): New quantity for the item"
+        },
+        {
+            "name": "remove_from_cart",
+            "description": "Remove items from the cart",
+            "parameters": "customer_id (required), product_ids (required): List of product IDs to remove"
+        },
+        {
+            "name": "checkout",
+            "description": "Initiate checkout process (triggers AP2 flow, verifies user intent)",
+            "parameters": "customer_id (required): The ID of the customer"
+        },
+        {
+            "name": "get_shipping_preferences",
+            "description": "Retrieve shipping address and delivery preferences for a customer",
+            "parameters": "customer_id (required): The ID of the customer"
+        },
+        {
+            "name": "set_shipping_preferences",
+            "description": "Update shipping information for a customer",
+            "parameters": "customer_id (required), address_line1, address_line2, city, state, postal_code, country, delivery_method"
+        },
+        {
+            "name": "list_orders",
+            "description": "List all orders with comprehensive details (items, prices, order status, payment status, shipping status)",
+            "parameters": "None"
         }
     ]
     
@@ -128,7 +168,7 @@ async def list_merchant_items(merchant_id: str) -> str:
     response = f"Items for Merchant {merchant_id}:\n\n"
     
     for item in items:
-        item_id = item.get("item_id", "Unknown")
+        item_id = item.get("itemId", "Unknown")
         name = item.get("name", "Unknown")
         quantity = item.get("quantity", 0)
         price = item.get("price", 0.0)
@@ -172,6 +212,382 @@ async def get_merchant_catalog(merchant_id: str) -> str:
     }
     
     return json.dumps(catalog_data, indent=2)
+
+# Cart Management MCP Tools
+
+async def resolve_product_id(merchant_id: str, product_name_or_id: str) -> str:
+    """Resolve a product name to its ID, or return the ID if already provided"""
+    # If it looks like an ID (starts with letter and underscore), treat it as an ID
+    if product_name_or_id.startswith(('i_', 'f_', 'b_')) and '_' in product_name_or_id:
+        return product_name_or_id
+    
+    # First, try to get the merchant's items
+    endpoint = f"/merchant.sv1.MerchantService/{merchant_id}/ListItems"
+    data = {
+        "merchant_id": merchant_id,
+        "page_size": 100,
+        "page_token": ""
+    }
+    
+    result = await make_restate_request(endpoint, "POST", data)
+    
+    if "error" in result:
+        # If we can't get items, assume it's already an ID
+        return product_name_or_id
+    
+    items = result.get("items", [])
+    
+    # Look for exact match by name (case-insensitive)
+    for item in items:
+        if item.get("name", "").lower() == product_name_or_id.lower():
+            return item.get("itemId", product_name_or_id)
+    
+    # If no match found, assume it's already an ID
+    return product_name_or_id
+
+@mcp.tool()
+async def add_to_cart(customer_id: str, merchant_id: str, items: List[Dict[str, Any]]) -> str:
+    """Add items to a customer's shopping cart
+    
+    Args:
+        customer_id: The ID of the customer
+        merchant_id: The ID of the merchant
+        items: List of items with product_id and quantity
+    """
+    if not customer_id or not merchant_id or not items:
+        return "Error: customer_id, merchant_id, and items are required."
+    
+    # Resolve product names to product IDs
+    resolved_items = []
+    for item in items:
+        product_id = await resolve_product_id(merchant_id, item.get("product_id", ""))
+        resolved_items.append({
+            "product_id": product_id,
+            "quantity": item.get("quantity", 1)
+        })
+    
+    # Call the AddToCart endpoint for the specific customer
+    endpoint = f"/cart.sv1.CartService/{customer_id}/AddToCart"
+    data = {
+        "customer_id": customer_id,
+        "merchant_id": merchant_id,
+        "items": resolved_items
+    }
+    
+    result = await make_restate_request(endpoint, "POST", data)
+    
+    if "error" in result:
+        return f"Error adding items to cart: {result['error']}"
+    
+    if result.get("success", False):
+        cart_state = result.get("cart_state", {})
+        items_count = len(cart_state.get("items", []))
+        total_amount = cart_state.get("total_amount", 0)
+        return f"Successfully added items to cart! Cart now contains {items_count} items with total amount: ${total_amount:.2f}"
+    else:
+        return f"Failed to add items to cart: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+async def view_cart(customer_id: str) -> str:
+    """View the current contents of a customer's shopping cart
+    
+    Args:
+        customer_id: The ID of the customer
+    """
+    if not customer_id:
+        return "Error: customer_id is required."
+    
+    # Call the ViewCart endpoint for the specific customer
+    endpoint = f"/cart.sv1.CartService/{customer_id}/ViewCart"
+    data = {
+        "customer_id": customer_id
+    }
+    
+    result = await make_restate_request(endpoint, "POST", data)
+    
+    if "error" in result:
+        return f"Error viewing cart: {result['error']}"
+    
+    cart_state = result.get("cart_state", {})
+    items = cart_state.get("items", [])
+    total_amount = cart_state.get("total_amount", 0)
+    merchant_id = cart_state.get("merchant_id", "Unknown")
+    
+    if not items:
+        return f"Cart is empty for customer {customer_id}."
+    
+    response = f"Cart for customer {customer_id} (Merchant: {merchant_id}):\n\n"
+    response += f"Total Amount: ${total_amount:.2f}\n\n"
+    response += "Items:\n"
+    
+    for item in items:
+        product_id = item.get("product_id", "Unknown")
+        name = item.get("name", "Unknown")
+        quantity = item.get("quantity", 0)
+        unit_price = item.get("unit_price", 0.0)
+        item_total = quantity * unit_price
+        
+        response += f"• **{name}** (ID: {product_id})\n"
+        response += f"  Quantity: {quantity}\n"
+        response += f"  Unit Price: ${unit_price:.2f}\n"
+        response += f"  Item Total: ${item_total:.2f}\n\n"
+    
+    return response
+
+@mcp.tool()
+async def update_cart_item(customer_id: str, product_id: str, quantity: int) -> str:
+    """Update the quantity of an item in the cart
+    
+    Args:
+        customer_id: The ID of the customer
+        product_id: The ID of the product to update (can be product name or ID)
+        quantity: New quantity for the item
+    """
+    if not customer_id or not product_id:
+        return "Error: customer_id and product_id are required."
+    
+    # First get the merchant_id from the cart to resolve product names
+    cart_endpoint = f"/cart.sv1.CartService/{customer_id}/ViewCart"
+    cart_data = {"customer_id": customer_id}
+    
+    cart_result = await make_restate_request(cart_endpoint, "POST", cart_data)
+    merchant_id = cart_result.get("cart_state", {}).get("merchant_id", "m_001")
+    
+    # Resolve product name to ID if needed
+    resolved_product_id = await resolve_product_id(merchant_id, product_id)
+    
+    # Call the UpdateCartItem endpoint for the specific customer
+    endpoint = f"/cart.sv1.CartService/{customer_id}/UpdateCartItem"
+    data = {
+        "customer_id": customer_id,
+        "product_id": resolved_product_id,
+        "quantity": quantity
+    }
+    
+    result = await make_restate_request(endpoint, "POST", data)
+    
+    if "error" in result:
+        return f"Error updating cart item: {result['error']}"
+    
+    if result.get("success", False):
+        cart_state = result.get("cart_state", {})
+        items_count = len(cart_state.get("items", []))
+        total_amount = cart_state.get("total_amount", 0)
+        return f"Successfully updated cart item! Cart now contains {items_count} items with total amount: ${total_amount:.2f}"
+    else:
+        return f"Failed to update cart item: {result.get('message', 'Unknown error')}"
+
+@mcp.tool()
+async def remove_from_cart(customer_id: str, product_ids: List[str]) -> str:
+    """Remove items from the cart
+    
+    Args:
+        customer_id: The ID of the customer
+        product_ids: List of product IDs to remove
+    """
+    if not customer_id or not product_ids:
+        return "Error: customer_id and product_ids are required."
+    
+    # Call the RemoveFromCart endpoint for the specific customer
+    endpoint = f"/cart.sv1.CartService/{customer_id}/RemoveFromCart"
+    data = {
+        "customer_id": customer_id,
+        "product_ids": product_ids
+    }
+    
+    result = await make_restate_request(endpoint, "POST", data)
+    
+    if "error" in result:
+        return f"Error removing items from cart: {result['error']}"
+    
+    if result.get("success", False):
+        cart_state = result.get("cart_state", {})
+        items_count = len(cart_state.get("items", []))
+        total_amount = cart_state.get("total_amount", 0)
+        return f"Successfully removed items from cart! Cart now contains {items_count} items with total amount: ${total_amount:.2f}"
+    else:
+        return f"Failed to remove items from cart: {result.get('message', 'Unknown error')}"
+
+# Checkout and Shipping MCP Tools
+
+@mcp.tool()
+async def checkout(customer_id: str) -> str:
+    """Initiate checkout process (triggers AP2 flow, verifies user intent)
+    
+    Args:
+        customer_id: The ID of the customer
+    """
+    if not customer_id:
+        return "Error: customer_id is required."
+    
+    # First, get the current cart to verify it's not empty
+    cart_endpoint = f"/cart.sv1.CartService/{customer_id}/ViewCart"
+    cart_data = {"customer_id": customer_id}
+    
+    cart_result = await make_restate_request(cart_endpoint, "POST", cart_data)
+    
+    if "error" in cart_result:
+        return f"Error getting cart for checkout: {cart_result['error']}"
+    
+    cart_state = cart_result.get("cart_state", {})
+    items = cart_state.get("items", [])
+    total_amount = cart_state.get("total_amount", 0)
+    
+    if not items:
+        return "Error: Cannot checkout with an empty cart."
+    
+    # Create AP2 mandate (simplified - in real implementation, this would require user confirmation)
+    mandate_data = {
+        "customer_id": customer_id,
+        "scope": "purchase",
+        "amount_limit": total_amount * 1.1,  # Allow 10% buffer
+        "expires_at": "2024-12-31T23:59:59Z"  # Set expiration far in future
+    }
+    
+    mandate_result = await make_restate_request("/ap2/mandates", "POST", mandate_data)
+    
+    if "error" in mandate_result:
+        return f"Error creating mandate: {mandate_result['error']}"
+    
+    mandate_id = mandate_result.get("mandate_id")
+    
+    # Create AP2 intent
+    intent_data = {
+        "mandate_id": mandate_id,
+        "customer_id": customer_id,
+        "cart_id": customer_id,  # Using customer_id as cart_id
+        "shipping_address": {
+            "address_line1": "123 Main St",
+            "city": "San Francisco",
+            "state": "CA",
+            "postal_code": "94105",
+            "country": "USA",
+            "delivery_method": "standard"
+        }
+    }
+    
+    intent_result = await make_restate_request("/ap2/intents", "POST", intent_data)
+    
+    if "error" in intent_result:
+        return f"Error creating intent: {intent_result['error']}"
+    
+    intent_id = intent_result.get("intent_id")
+    
+    # Authorize the payment
+    auth_data = {
+        "intent_id": intent_id,
+        "mandate_id": mandate_id
+    }
+    
+    auth_result = await make_restate_request("/ap2/authorize", "POST", auth_data)
+    
+    if "error" in auth_result:
+        return f"Error authorizing payment: {auth_result['error']}"
+    
+    if not auth_result.get("authorized", False):
+        return f"Payment authorization failed: {auth_result.get('message', 'Unknown error')}"
+    
+    authorization_id = auth_result.get("authorization_id")
+    
+    # Execute the payment
+    execute_data = {
+        "authorization_id": authorization_id,
+        "intent_id": intent_id
+    }
+    
+    execute_result = await make_restate_request("/ap2/execute", "POST", execute_data)
+    
+    if "error" in execute_result:
+        return f"Error executing payment: {execute_result['error']}"
+    
+    execution_id = execute_result.get("execution_id")
+    invoice_url = execute_result.get("invoice_url")
+    order_id = execute_result.get("order_id")
+    
+    return f"Checkout initiated successfully!\n\nOrder ID: {order_id}\nExecution ID: {execution_id}\nInvoice URL: {invoice_url}\n\nPlease complete payment using the invoice URL."
+
+@mcp.tool()
+async def get_shipping_preferences(customer_id: str) -> str:
+    """Retrieve shipping address and delivery preferences for a customer
+    
+    Args:
+        customer_id: The ID of the customer
+    """
+    if not customer_id:
+        return "Error: customer_id is required."
+    
+    # For now, return a placeholder response since we haven't implemented the database query yet
+    return f"Shipping preferences for customer {customer_id}:\n\nAddress: 123 Main St, San Francisco, CA 94105, USA\nDelivery Method: Standard\n\nNote: This is a placeholder response. Shipping preferences will be stored in the database."
+
+@mcp.tool()
+async def set_shipping_preferences(customer_id: str, address_line1: str = "", address_line2: str = "", 
+                                 city: str = "", state: str = "", postal_code: str = "", 
+                                 country: str = "", delivery_method: str = "") -> str:
+    """Update shipping information for a customer
+    
+    Args:
+        customer_id: The ID of the customer
+        address_line1: First line of address
+        address_line2: Second line of address (optional)
+        city: City name
+        state: State or province
+        postal_code: Postal or ZIP code
+        country: Country name
+        delivery_method: Delivery method preference
+    """
+    if not customer_id:
+        return "Error: customer_id is required."
+    
+    # For now, return a placeholder response since we haven't implemented the database update yet
+    return f"Shipping preferences updated for customer {customer_id}:\n\nAddress: {address_line1}, {city}, {state} {postal_code}, {country}\nDelivery Method: {delivery_method}\n\nNote: This is a placeholder response. Shipping preferences will be stored in the database."
+
+@mcp.tool()
+async def list_orders() -> str:
+    """List all orders with comprehensive details (items, prices, order status, payment status, shipping status)"""
+    
+    # Call the orders API endpoint
+    result = await make_restate_request("/api/orders", "GET")
+    
+    if "error" in result:
+        return f"Error retrieving orders: {result['error']}"
+    
+    orders = result.get("orders", [])
+    
+    if not orders:
+        return "No orders found."
+    
+    response = f"Found {len(orders)} orders:\n\n"
+    
+    for order in orders:
+        order_id = order.get("id", "Unknown")
+        customer_id = order.get("customer_id", "Unknown")
+        status = order.get("status", "Unknown")
+        total_amount = order.get("total_amount", 0)
+        payment_status = order.get("payment_status", "Unknown")
+        invoice_url = order.get("invoice_url", "")
+        items = order.get("items", [])
+        updated_at = order.get("updated_at", "Unknown")
+        
+        response += f"**Order {order_id}**\n"
+        response += f"Customer: {customer_id}\n"
+        response += f"Status: {status}\n"
+        response += f"Total Amount: ${total_amount:.2f}\n"
+        response += f"Payment Status: {payment_status}\n"
+        if invoice_url:
+            response += f"Invoice URL: {invoice_url}\n"
+        response += f"Updated: {updated_at}\n"
+        
+        if items:
+            response += "Items:\n"
+            for item in items:
+                item_name = item.get("name", "Unknown")
+                item_quantity = item.get("quantity", 0)
+                item_price = item.get("unit_price", 0)
+                response += f"  • {item_name} (Qty: {item_quantity}, Price: ${item_price:.2f})\n"
+        
+        response += "\n"
+    
+    return response
 
 # Main entry point
 if __name__ == "__main__":

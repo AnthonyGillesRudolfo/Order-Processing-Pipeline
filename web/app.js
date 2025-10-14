@@ -1,7 +1,8 @@
 let PRODUCTS = []; // Will be loaded dynamically
 let currentMerchantId = 'm_001'; // Default merchant
+let currentCustomerId = 'customer-001'; // Default customer
   
-  const basket = new Map(); // productId -> quantity
+  const basket = new Map(); // productId -> quantity (local cache)
   
   const $ = (sel) => document.querySelector(sel);
   const productsEl = $('#products');
@@ -12,6 +13,8 @@ let currentMerchantId = 'm_001'; // Default merchant
   const customerInput = $('#customer-id');
   const merchantSelect = $('#merchant-select');
   const refreshProductsBtn = $('#refresh-products');
+  const loadCartBtn = $('#load-cart-btn');
+  const cartRefreshBtn = $('#cart-refresh-btn');
   
   const ordersListEl = document.getElementById('orders-list');
 
@@ -98,19 +101,106 @@ let currentMerchantId = 'm_001'; // Default merchant
     document.getElementById('basket-total').textContent = `$${totalAmount.toFixed(2)}`;
   }
   
-  function addToBasket(pid) {
-    basket.set(pid, (basket.get(pid) || 0) + 1);
-    renderBasket();
+  async function addToBasket(pid) {
+    try {
+      const response = await fetch(`/api/cart/${currentCustomerId}/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: currentCustomerId,
+          merchant_id: currentMerchantId,
+          items: [{ product_id: pid, quantity: 1 }]
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        showModal('Error', `Failed to add item to cart: ${error}`);
+        return;
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        // Update local cache
+        basket.set(pid, (basket.get(pid) || 0) + 1);
+        renderBasket();
+        showModal('Success', 'Item added to cart successfully');
+      } else {
+        showModal('Error', result.message || 'Failed to add item to cart');
+      }
+    } catch (error) {
+      showModal('Error', `Network error: ${error.message}`);
+    }
   }
-  function changeQty(pid, delta) {
-    const next = (basket.get(pid) || 0) + delta;
-    if (next <= 0) basket.delete(pid);
-    else basket.set(pid, next);
-    renderBasket();
+  async function changeQty(pid, delta) {
+    const currentQty = basket.get(pid) || 0;
+    const next = currentQty + delta;
+    
+    if (next <= 0) {
+      // Remove item from cart
+      try {
+        const response = await fetch(`/api/cart/${currentCustomerId}/remove`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: currentCustomerId,
+            product_ids: [pid]
+          })
+        });
+
+        if (response.ok) {
+          basket.delete(pid);
+          renderBasket();
+        } else {
+          showModal('Error', 'Failed to remove item from cart');
+        }
+      } catch (error) {
+        showModal('Error', `Network error: ${error.message}`);
+      }
+    } else {
+      // Update quantity
+      try {
+        const response = await fetch(`/api/cart/${currentCustomerId}/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: currentCustomerId,
+            product_id: pid,
+            quantity: next
+          })
+        });
+
+        if (response.ok) {
+          basket.set(pid, next);
+          renderBasket();
+        } else {
+          showModal('Error', 'Failed to update item quantity');
+        }
+      } catch (error) {
+        showModal('Error', `Network error: ${error.message}`);
+      }
+    }
   }
-  function removeFromBasket(pid) {
-    basket.delete(pid);
-    renderBasket();
+  async function removeFromBasket(pid) {
+    try {
+      const response = await fetch(`/api/cart/${currentCustomerId}/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: currentCustomerId,
+          product_ids: [pid]
+        })
+      });
+
+      if (response.ok) {
+        basket.delete(pid);
+        renderBasket();
+      } else {
+        showModal('Error', 'Failed to remove item from cart');
+      }
+    } catch (error) {
+      showModal('Error', `Network error: ${error.message}`);
+    }
   }
   
   async function checkout() {
@@ -197,16 +287,69 @@ let currentMerchantId = 'm_001'; // Default merchant
     currentMerchantId = merchantSelect.value;
     basket.clear(); // Clear basket when switching merchants
     loadProducts();
-    renderBasket();
+    loadCart(); // Reload cart from backend
   };
   
   refreshProductsBtn.onclick = () => {
     loadProducts();
   };
+
+  // Cart management buttons
+  loadCartBtn.onclick = () => {
+    const newCustomerId = customerInput.value.trim() || 'customer-001';
+    if (newCustomerId !== currentCustomerId) {
+      currentCustomerId = newCustomerId;
+      basket.clear(); // Clear local basket when switching customers
+    }
+    loadCart();
+  };
+
+  cartRefreshBtn.onclick = () => {
+    loadCart();
+  };
   
+  // Load cart from backend
+  async function loadCart() {
+    try {
+      console.log(`Loading cart for customer: ${currentCustomerId}`);
+      const response = await fetch(`/api/cart/${currentCustomerId}/view`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: currentCustomerId })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Cart loaded successfully:', result);
+        const cartState = result.cart_state || {};
+        const items = cartState.items || [];
+        
+        // Update local basket cache
+        basket.clear();
+        items.forEach(item => {
+          basket.set(item.product_id, item.quantity);
+        });
+        
+        renderBasket();
+        console.log(`Cart rendered with ${items.length} items`);
+      } else {
+        console.warn('Failed to load cart from backend:', response.status, response.statusText);
+        const errorText = await response.text();
+        console.warn('Error details:', errorText);
+        renderBasket(); // Render empty cart
+      }
+    } catch (error) {
+      console.warn('Error loading cart:', error);
+      renderBasket(); // Render empty cart
+    }
+  }
+
   // Load products and initialize
   loadProducts();
-  renderBasket();
+  // Add a small delay to ensure the server is ready
+  setTimeout(() => {
+    loadCart();
+  }, 500);
   loadOrders();
 
   async function loadOrders() {
