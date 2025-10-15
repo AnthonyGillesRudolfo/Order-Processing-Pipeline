@@ -492,39 +492,3 @@ func getOrderFromDBByPaymentID(paymentID string) (map[string]any, error) {
 		},
 	}, nil
 }
-
-// MapXenditStatusToAP2 converts Xendit payment status to AP2 ExecutionResult status
-func MapXenditStatusToAP2(xenditStatus string) string {
-	switch xenditStatus {
-	case "PAID":
-		return "completed"
-	case "EXPIRED":
-		return "failed"
-	case "FAILED":
-		return "failed"
-	case "PENDING":
-		return "pending"
-	case "SETTLED":
-		return "completed"
-	case "REFUNDED":
-		return "refunded"
-	default:
-		return "pending"
-	}
-}
-
-// MapAP2StatusToXendit converts AP2 ExecutionResult status to Xendit payment status
-func MapAP2StatusToXendit(ap2Status string) string {
-	switch ap2Status {
-	case "completed":
-		return "PAID"
-	case "failed":
-		return "FAILED"
-	case "pending":
-		return "PENDING"
-	case "refunded":
-		return "REFUNDED"
-	default:
-		return "PENDING"
-	}
-}
