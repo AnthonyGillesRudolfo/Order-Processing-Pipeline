@@ -100,14 +100,12 @@ func InsertOrderItems(orderID, merchantID string, items []*orderpb.OrderItems) e
 	}
 	for _, it := range items {
 		qty := it.Quantity
-		log.Printf("[DEBUG] InsertOrderItems: processing item - ProductId='%s', Quantity=%d, merchantID='%s'", it.ProductId, qty, merchantID)
 		// Try to fetch item name and price from merchant_items table
 		var name string
 		var unit float64 = 1.00
 		if DB != nil && merchantID != "" {
 			_ = DB.QueryRow(`SELECT name, price FROM merchant_items WHERE merchant_id = $1 AND item_id = $2`, merchantID, it.ProductId).
 				Scan(&name, &unit)
-			log.Printf("[DEBUG] InsertOrderItems: lookup result - name='%s', price=%.2f", name, unit)
 		}
 		if name == "" {
 			name = it.ProductId
@@ -210,6 +208,59 @@ func UpdatePaymentStatus(paymentID string, status orderpb.PaymentStatus) error {
 	}
 	log.Printf("[DB] Updated payment status: %s -> %s", paymentID, status.String())
 	return nil
+}
+
+// GetPaymentByOrderID retrieves payment information by order ID
+func GetPaymentByOrderID(orderID string) (*struct {
+	ID            string
+	OrderID       string
+	Amount        float64
+	PaymentMethod string
+	Status        string
+	InvoiceURL    string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	var id, orderIDResult, paymentMethod, status, invoiceURL string
+	var amount float64
+	var createdAt, updatedAt time.Time
+
+	err := DB.QueryRow(`
+		SELECT id, order_id, amount, payment_method, status, invoice_url, created_at, updated_at
+		FROM payments
+		WHERE order_id = $1
+	`, orderID).Scan(&id, &orderIDResult, &amount, &paymentMethod, &status, &invoiceURL, &createdAt, &updatedAt)
+
+	if err != nil {
+		return nil, err
+	}
+
+	payment := &struct {
+		ID            string
+		OrderID       string
+		Amount        float64
+		PaymentMethod string
+		Status        string
+		InvoiceURL    string
+		CreatedAt     time.Time
+		UpdatedAt     time.Time
+	}{
+		ID:            id,
+		OrderID:       orderIDResult,
+		Amount:        amount,
+		PaymentMethod: paymentMethod,
+		Status:        status,
+		InvoiceURL:    invoiceURL,
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
+	}
+
+	log.Printf("[DB] Retrieved payment: %s for order: %s", id, orderID)
+	return payment, nil
 }
 
 // Optional helpers for invoice persistence

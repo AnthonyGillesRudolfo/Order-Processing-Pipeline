@@ -32,6 +32,24 @@ message CreateOrderResponse {
   string invoice_url = 2;
 }
 
+message CheckoutRequest {
+  string customer_id = 1;
+  repeated OrderItems items = 2;
+  string merchant_id = 3;
+}
+
+message CheckoutResponse {
+  string order_id = 1;
+  string payment_id = 2;
+  string invoice_link = 3;
+  string status = 4;
+}
+
+message OnPaymentUpdateRequest {
+  string payment_id = 1;
+  string status = 2; // "PAID", "EXPIRED", "FAILED"
+}
+
 message GetOrderRequest {
   string order_id = 1;
 }
@@ -70,10 +88,14 @@ message UpdateOrderStatusResponse {
 
 service OrderService {
   rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+  // New checkout method that returns immediately after creating invoice
+  rpc Checkout(CheckoutRequest) returns (CheckoutResponse);
   rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
   rpc UpdateOrderStatus(UpdateOrderStatusRequest) returns (UpdateOrderStatusResponse);
   // Continue the order after payment is marked completed
   rpc ContinueAfterPayment(ContinueAfterPaymentRequest) returns (ContinueAfterPaymentResponse);
+  // Handle payment status updates from webhooks
+  rpc OnPaymentUpdate(OnPaymentUpdateRequest) returns (ContinueAfterPaymentResponse);
   // Cancel an order with saga pattern (only after payment is completed)
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
   // Manually ship an order (move from PROCESSING to SHIPPED)

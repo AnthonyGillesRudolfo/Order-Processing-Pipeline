@@ -1,6 +1,8 @@
 from typing import Any, List, Dict
 import httpx
 import json
+import uuid
+import os
 from mcp.server.fastmcp import FastMCP
 
 # Initialize the MCP server
@@ -8,6 +10,7 @@ mcp = FastMCP("Order Processing Pipeline MCP Server")
 
 # Configuration
 RESTATE_RUNTIME_URL = "http://127.0.0.1:8080"
+AP2_BASE = os.getenv("AP2_BASE", "http://localhost:3000")
 
 async def make_restate_request(endpoint: str, method: str = "POST", data: Dict = None) -> Dict:
     """Make a request to the Restate runtime"""
@@ -26,6 +29,32 @@ async def make_restate_request(endpoint: str, method: str = "POST", data: Dict =
         return {"error": f"HTTP error: {str(e)}"}
     except Exception as e:
         return {"error": f"Request failed: {str(e)}"}
+
+async def make_ap2_request(endpoint: str, method: str = "POST", data: Dict = None, params: Dict = None) -> Dict:
+    """Make a request to the AP2 adapter service"""
+    url = f"{AP2_BASE}{endpoint}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            else:
+                response = await client.post(url, json=data or {}, params=params)
+            
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        error_body = ""
+        try:
+            error_body = await e.response.aread()
+            error_body = error_body.decode('utf-8')
+        except:
+            pass
+        return {"error": f"AP2 HTTP error {e.response.status_code}: {error_body or str(e)}"}
+    except httpx.RequestError as e:
+        return {"error": f"AP2 request error: {str(e)}"}
+    except Exception as e:
+        return {"error": f"AP2 request failed: {str(e)}"}
 
 @mcp.tool()
 async def list_tools() -> str:
@@ -69,6 +98,11 @@ async def list_tools() -> str:
         {
             "name": "checkout",
             "description": "Initiate checkout process (triggers AP2 flow, verifies user intent)",
+            "parameters": "customer_id (required): The ID of the customer"
+        },
+        {
+            "name": "checkout_cart",
+            "description": "Checkout and create a Xendit invoice for the current cart using AP2 integration",
             "parameters": "customer_id (required): The ID of the customer"
         },
         {
@@ -437,14 +471,16 @@ async def checkout(customer_id: str) -> str:
         return "Error: Cannot checkout with an empty cart."
     
     # Create AP2 mandate (simplified - in real implementation, this would require user confirmation)
+    import datetime
+    future_date = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
     mandate_data = {
         "customer_id": customer_id,
         "scope": "purchase",
         "amount_limit": total_amount * 1.1,  # Allow 10% buffer
-        "expires_at": "2024-12-31T23:59:59Z"  # Set expiration far in future
+        "expires_at": future_date  # Set expiration far in future
     }
     
-    mandate_result = await make_restate_request("/ap2/mandates", "POST", mandate_data)
+    mandate_result = await make_ap2_request("/ap2/mandates", "POST", mandate_data)
     
     if "error" in mandate_result:
         return f"Error creating mandate: {mandate_result['error']}"
@@ -458,15 +494,15 @@ async def checkout(customer_id: str) -> str:
         "cart_id": customer_id,  # Using customer_id as cart_id
         "shipping_address": {
             "address_line1": "123 Main St",
-            "city": "San Francisco",
-            "state": "CA",
-            "postal_code": "94105",
-            "country": "USA",
+            "city": "Jakarta",
+            "state": "DKI Jakarta",
+            "postal_code": "10110",
+            "country": "Indonesia",
             "delivery_method": "standard"
         }
     }
     
-    intent_result = await make_restate_request("/ap2/intents", "POST", intent_data)
+    intent_result = await make_ap2_request("/ap2/intents", "POST", intent_data)
     
     if "error" in intent_result:
         return f"Error creating intent: {intent_result['error']}"
@@ -479,7 +515,7 @@ async def checkout(customer_id: str) -> str:
         "mandate_id": mandate_id
     }
     
-    auth_result = await make_restate_request("/ap2/authorize", "POST", auth_data)
+    auth_result = await make_ap2_request("/ap2/authorize", "POST", auth_data)
     
     if "error" in auth_result:
         return f"Error authorizing payment: {auth_result['error']}"
@@ -495,16 +531,167 @@ async def checkout(customer_id: str) -> str:
         "intent_id": intent_id
     }
     
-    execute_result = await make_restate_request("/ap2/execute", "POST", execute_data)
+    execute_result = await make_ap2_request("/ap2/execute", "POST", execute_data)
     
     if "error" in execute_result:
+        print(f"DEBUG: Execute result error: {execute_result['error']}")
         return f"Error executing payment: {execute_result['error']}"
     
-    execution_id = execute_result.get("execution_id")
-    invoice_url = execute_result.get("invoice_url")
-    order_id = execute_result.get("order_id")
+    # Handle AP2 envelope response format
+    result_data = execute_result.get("result", execute_result)  # Fallback to direct response
     
-    return f"Checkout initiated successfully!\n\nOrder ID: {order_id}\nExecution ID: {execution_id}\nInvoice URL: {invoice_url}\n\nPlease complete payment using the invoice URL."
+    execution_id = result_data.get("execution_id") or result_data.get("executionId")
+    invoice_url = result_data.get("invoice_url") or result_data.get("invoiceLink")
+    order_id = result_data.get("order_id") or result_data.get("orderId")
+    payment_id = result_data.get("payment_id") or result_data.get("paymentId")
+    status = result_data.get("status")
+    
+    # Clear the cart after successful checkout
+    clear_cart_endpoint = f"/cart.sv1.CartService/{customer_id}/ClearCart"
+    clear_cart_data = {"customer_id": customer_id}
+    
+    clear_result = await make_restate_request(clear_cart_endpoint, "POST", clear_cart_data)
+    
+    if "error" in clear_result:
+        # Log the error but don't fail the checkout
+        print(f"Warning: Failed to clear cart after checkout: {clear_result['error']}")
+    
+    return f"✅ Checkout initiated successfully!\n\n" \
+           f"**Order ID:** {order_id or 'Generated'}\n" \
+           f"**Payment ID:** {payment_id}\n" \
+           f"**Execution ID:** {execution_id}\n" \
+           f"**Status:** {status}\n\n" \
+           f"🔗 **Invoice URL:** {invoice_url}\n\n" \
+           f"Please complete payment using the invoice URL above. " \
+           f"Your cart has been cleared and the payment will be processed once you complete it on the invoice page."
+
+@mcp.tool()
+async def checkout_cart(customer_id: str) -> str:
+    """Checkout and create a Xendit invoice for the current cart using AP2 integration
+    
+    Args:
+        customer_id: The ID of the customer
+    """
+    if not customer_id:
+        return "Error: customer_id is required."
+    
+    # Get the current cart contents
+    cart_endpoint = f"/cart.sv1.CartService/{customer_id}/ViewCart"
+    cart_data = {"customer_id": customer_id}
+    
+    cart_result = await make_restate_request(cart_endpoint, "POST", cart_data)
+    
+    if "error" in cart_result:
+        return f"Error getting cart for checkout: {cart_result['error']}"
+    
+    cart_state = cart_result.get("cart_state", {})
+    items = cart_state.get("items", [])
+    total_amount = cart_state.get("total_amount", 0)
+    
+    if not items:
+        return "Error: Cannot checkout with an empty cart."
+    
+    # Generate order ID
+    order_id = f"ORD-{uuid.uuid4().hex[:8]}"
+    
+    # 1. Create AP2 Mandate first
+    import datetime
+    future_date = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mandate_data = {
+        "customer_id": customer_id,
+        "scope": "purchase",
+        "amount_limit": total_amount * 1.1,  # Allow 10% buffer
+        "expires_at": future_date
+    }
+    
+    mandate_result = await make_ap2_request("/ap2/mandates", "POST", mandate_data)
+    
+    if "error" in mandate_result:
+        return f"Error creating mandate: {mandate_result['error']}"
+    
+    mandate_id = mandate_result.get("mandate_id")
+    
+    # 2. Create AP2 Payment Intent
+    intent_data = {
+        "mandate_id": mandate_id,
+        "customer_id": customer_id,
+        "cart_id": customer_id,  # Using customer_id as cart_id
+        "shipping_address": {
+            "address_line1": "123 Main St",
+            "city": "Jakarta",
+            "state": "DKI Jakarta",
+            "postal_code": "10110",
+            "country": "Indonesia",
+            "delivery_method": "standard"
+        }
+    }
+    
+    intent_result = await make_ap2_request("/ap2/intents", "POST", intent_data)
+    
+    if "error" in intent_result:
+        return f"Error creating AP2 intent: {intent_result['error']}"
+    
+    intent_id = intent_result.get("intent_id")
+    if not intent_id:
+        return f"Error: No intent_id received from AP2 intent creation"
+    
+    # 3. Authorize the intent
+    auth_data = {
+        "intent_id": intent_id,
+        "mandate_id": mandate_id
+    }
+    
+    auth_result = await make_ap2_request("/ap2/authorize", "POST", auth_data)
+    
+    if "error" in auth_result:
+        return f"Error authorizing AP2 intent: {auth_result['error']}"
+    
+    authorization_id = auth_result.get("authorization_id")
+    if not authorization_id:
+        return f"Error: No authorization_id received from AP2 authorization"
+    
+    # 3. Execute the intent -> returns invoice link
+    execute_data = {
+        "authorization_id": authorization_id,
+        "intent_id": intent_id
+    }
+    
+    execute_result = await make_ap2_request("/ap2/execute", "POST", execute_data)
+    
+    if "error" in execute_result:
+        print(f"DEBUG: AP2 Execute result error: {execute_result['error']}")
+        return f"Error executing AP2 intent: {execute_result['error']}"
+    
+    # Handle AP2 envelope response format
+    result_data = execute_result.get("result", execute_result)  # Fallback to direct response
+    
+    payment_id = result_data.get("payment_id") or result_data.get("paymentId")
+    invoice_link = result_data.get("invoice_url") or result_data.get("invoiceLink")
+    status = result_data.get("status")
+    execution_id = result_data.get("execution_id") or result_data.get("executionId")
+    order_id = result_data.get("order_id") or result_data.get("orderId")
+    
+    if not invoice_link:
+        return f"Error: No invoice link received from AP2 execution. Status: {status}"
+    
+    # Clear the cart after successful checkout
+    clear_cart_endpoint = f"/cart.sv1.CartService/{customer_id}/ClearCart"
+    clear_cart_data = {"customer_id": customer_id}
+    
+    clear_result = await make_restate_request(clear_cart_endpoint, "POST", clear_cart_data)
+    
+    if "error" in clear_result:
+        # Log the error but don't fail the checkout
+        print(f"Warning: Failed to clear cart after checkout: {clear_result['error']}")
+    
+    return f"✅ Checkout completed successfully!\n\n" \
+           f"**Order ID:** {order_id or 'Generated'}\n" \
+           f"**Payment ID:** {payment_id}\n" \
+           f"**Execution ID:** {execution_id}\n" \
+           f"**Status:** {status}\n\n" \
+           f"🔗 **Invoice Link:** {invoice_link}\n\n" \
+           f"Please complete the payment using the invoice link above. " \
+           f"Your cart has been cleared and the payment will be processed once you complete it on the invoice page."
 
 @mcp.tool()
 async def get_shipping_preferences(customer_id: str) -> str:
@@ -545,8 +732,8 @@ async def set_shipping_preferences(customer_id: str, address_line1: str = "", ad
 async def list_orders() -> str:
     """List all orders with comprehensive details (items, prices, order status, payment status, shipping status)"""
     
-    # Call the orders API endpoint
-    result = await make_restate_request("/api/orders", "GET")
+    # Call the orders API endpoint on the main server (not Restate runtime)
+    result = await make_ap2_request("/api/orders", "GET")
     
     if "error" in result:
         return f"Error retrieving orders: {result['error']}"

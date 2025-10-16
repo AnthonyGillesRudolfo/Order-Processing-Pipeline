@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	internalap2 "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/ap2"
 	internalcart "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/cart"
 	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
@@ -27,6 +29,19 @@ import (
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
 )
+
+// AP2 response types (copied from internal/ap2/handlers.go)
+type AP2ExecuteResult struct {
+	ExecutionID string `json:"executionId"`
+	Status      string `json:"status"`      // "pending" | "completed" | "failed" | "refunded"
+	InvoiceLink string `json:"invoiceLink"` // rename from invoice_url
+	PaymentID   string `json:"paymentId"`
+	OrderID     string `json:"orderId"`
+}
+
+type AP2Envelope[T any] struct {
+	Result T `json:"result"`
+}
 
 func main() {
 	log.Println("Starting Order Processing Pipeline (modular server)...")
@@ -81,9 +96,11 @@ func main() {
 	// Bind OrderService as a Workflow
 	orderWorkflow := restate.NewWorkflow("order.sv1.OrderService", restate.WithProtoJSON).
 		Handler("CreateOrder", restate.NewWorkflowHandler(internalorder.CreateOrder)).
+		Handler("Checkout", restate.NewWorkflowHandler(internalorder.Checkout)).
 		Handler("GetOrder", restate.NewWorkflowSharedHandler(internalorder.GetOrder)).
 		Handler("UpdateOrderStatus", restate.NewWorkflowHandler(internalorder.UpdateOrderStatus)).
-		Handler("ContinueAfterPayment", restate.NewWorkflowHandler(internalorder.ContinueAfterPayment))
+		Handler("ContinueAfterPayment", restate.NewWorkflowHandler(internalorder.ContinueAfterPayment)).
+		Handler("OnPaymentUpdate", restate.NewWorkflowHandler(internalorder.OnPaymentUpdate))
 	srv = srv.Bind(orderWorkflow)
 
 	// Bind OrderManagementService as a Virtual Object for order operations
@@ -202,7 +219,9 @@ func startWebUIAndAPI() error {
 	mux.HandleFunc("/ap2/mandates/", internalap2.HandleGetMandate)
 	mux.HandleFunc("/ap2/intents", internalap2.HandleCreateIntent)
 	mux.HandleFunc("/ap2/authorize", internalap2.HandleAuthorize)
-	mux.HandleFunc("/ap2/execute", internalap2.HandleExecute)
+	mux.HandleFunc("/ap2/execute", handleAP2Execute)
+	mux.HandleFunc("/ap2/status/", internalap2.HandleGetStatus)
+	mux.HandleFunc("/webhooks/payment", handlePaymentWebhook)
 	mux.HandleFunc("/ap2/refunds", internalap2.HandleRefund)
 	mux.HandleFunc("/ap2/refunds/", internalap2.HandleGetRefund)
 
@@ -287,6 +306,168 @@ func withCORS(next http.Handler) http.Handler {
 	})
 }
 
+// handleAP2Execute handles AP2 execute requests by calling the AP2 handlers directly
+func handleAP2Execute(w http.ResponseWriter, r *http.Request) {
+	// Use the AP2 handlers directly instead of trying to call Restate
+	internalap2.HandleExecute(w, r)
+}
+
+// handlePaymentWebhook handles payment status updates from Xendit webhooks
+func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse Xendit webhook payload
+	var webhookPayload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&webhookPayload); err != nil {
+		log.Printf("[Webhook] Failed to decode webhook payload: %v", err)
+		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// Extract payment information from webhook
+	externalID, _ := webhookPayload["external_id"].(string)
+	status, _ := webhookPayload["status"].(string)
+
+	log.Printf("[Webhook] Received payment webhook: external_id=%s, status=%s", externalID, status)
+
+	if externalID == "" {
+		log.Printf("[Webhook] Missing external_id in webhook payload")
+		http.Error(w, "missing external_id", http.StatusBadRequest)
+		return
+	}
+
+	// Find the order ID by payment ID from database
+	var orderID string
+	if postgres.DB != nil {
+		err := postgres.DB.QueryRow(`SELECT order_id FROM orders WHERE payment_id = $1`, externalID).Scan(&orderID)
+		if err != nil {
+			log.Printf("[Webhook] Failed to find order for payment_id %s: %v", externalID, err)
+			http.Error(w, "order not found", http.StatusNotFound)
+			return
+		}
+	}
+
+	if orderID == "" {
+		log.Printf("[Webhook] Order ID not found for payment_id %s", externalID)
+		http.Error(w, "order not found", http.StatusNotFound)
+		return
+	}
+
+	// Call the OnPaymentUpdate workflow method via Restate runtime
+	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://localhost:8080")
+	updateReq := map[string]interface{}{
+		"paymentId": externalID,
+		"status":    status,
+	}
+
+	updateBody, _ := json.Marshal(updateReq)
+	updateURL := fmt.Sprintf("%s/order.sv1.OrderService/%s/OnPaymentUpdate", runtimeURL, orderID)
+
+	httpReq, err := http.NewRequest("POST", updateURL, bytes.NewReader(updateBody))
+	if err != nil {
+		log.Printf("[Webhook] Failed to create payment update request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Call the OnPaymentUpdate workflow
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("[Webhook] Failed to call OnPaymentUpdate workflow: %v", err)
+		http.Error(w, "failed to update payment status", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Webhook] OnPaymentUpdate workflow failed with status: %d", resp.StatusCode)
+		http.Error(w, "failed to update payment status", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[Webhook] Successfully updated payment status for order %s: %s", orderID, status)
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// processCheckout processes the checkout request and returns the AP2 response
+func processCheckout(w http.ResponseWriter, checkoutReq checkoutRequest) {
+	// Create a new request to the checkout endpoint
+	checkoutBody, _ := json.Marshal(checkoutReq)
+	checkoutReqHTTP, _ := http.NewRequest("POST", "http://localhost:3000/api/checkout", bytes.NewReader(checkoutBody))
+	checkoutReqHTTP.Header.Set("Content-Type", "application/json")
+
+	// Create a response recorder to capture the checkout response
+	checkoutResp := httptest.NewRecorder()
+
+	// Call the checkout handler directly
+	handleCheckout(checkoutResp, checkoutReqHTTP)
+
+	if checkoutResp.Code != 200 {
+		log.Printf("[AP2] Checkout failed with status: %d", checkoutResp.Code)
+		http.Error(w, "checkout failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse the checkout response to get the order ID and invoice URL
+	var checkoutResult struct {
+		OrderID    string `json:"order_id"`
+		InvoiceURL string `json:"invoice_url"`
+	}
+
+	if err := json.Unmarshal(checkoutResp.Body.Bytes(), &checkoutResult); err != nil {
+		log.Printf("[AP2] Failed to parse checkout response: %v", err)
+		http.Error(w, "failed to parse checkout response", http.StatusInternalServerError)
+		return
+	}
+
+	executionID := "exec-" + uuid.New().String()[:8]
+	paymentID := "payment-" + uuid.New().String()[:8]
+
+	// Fetch actual payment data from database
+	var invoiceURL string
+	var actualPaymentID string
+	if postgres.DB != nil {
+		payment, err := postgres.GetPaymentByOrderID(checkoutResult.OrderID)
+		if err != nil {
+			log.Printf("[AP2] warning: failed to load payment for order %s: %v", checkoutResult.OrderID, err)
+			// Use checkout result values as fallback
+			invoiceURL = checkoutResult.InvoiceURL
+			actualPaymentID = paymentID
+		} else {
+			invoiceURL = payment.InvoiceURL
+			actualPaymentID = payment.ID
+			log.Printf("[AP2] Found payment data: payment_id=%s, invoice_url=%s", payment.ID, payment.InvoiceURL)
+		}
+	} else {
+		invoiceURL = checkoutResult.InvoiceURL
+		actualPaymentID = paymentID
+	}
+
+	log.Printf("[AP2] Execute response: order_id=%s, payment_id=%s, invoice_url=%s", checkoutResult.OrderID, actualPaymentID, invoiceURL)
+
+	// Return 200 with JSON envelope and camelCase keys
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(AP2Envelope[AP2ExecuteResult]{
+		Result: AP2ExecuteResult{
+			ExecutionID: executionID,
+			Status:      strings.ToLower("pending"), // ensure lowercase
+			InvoiceLink: invoiceURL,                 // actual invoice URL from payment record
+			PaymentID:   actualPaymentID,
+			OrderID:     checkoutResult.OrderID,
+		},
+	})
+}
+
 func handleCheckout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -310,7 +491,6 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 		"merchant_id": req.MerchantID,
 	}
 	inBytes, _ := json.Marshal(in)
-	log.Printf("[DEBUG] Checkout request data: %s", string(inBytes))
 
 	// Call Restate runtime HTTP endpoint directly
 	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
@@ -594,7 +774,6 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 		if postgres.DB != nil {
 			row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
 			if err := row.Scan(&awakeableID); err != nil {
-				log.Printf("[DEBUG] Failed to get awakeable ID for order %s: %v", orderID, err)
 			}
 		}
 
@@ -607,17 +786,13 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 
 			awakeableResp, err := http.Post(awakeableURL, "application/json", bytes.NewReader(awakeableBytes))
 			if err != nil {
-				log.Printf("[DEBUG] Failed to resolve awakeable: %v", err)
 			} else {
 				defer awakeableResp.Body.Close()
 				if awakeableResp.StatusCode >= 200 && awakeableResp.StatusCode < 300 {
-					log.Printf("[DEBUG] Successfully resolved awakeable %s for order %s", awakeableID, orderID)
 				} else {
-					log.Printf("[DEBUG] Failed to resolve awakeable, status: %d", awakeableResp.StatusCode)
 				}
 			}
 		} else {
-			log.Printf("[DEBUG] No awakeable ID found for order %s", orderID)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -676,10 +851,8 @@ func getOrderFromDB(orderID string) (map[string]any, error) {
 		invoiceURL                        string
 	)
 	if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &shipmentID, &trackingNumber, &updatedAt, &paymentStatus, &invoiceURL); err != nil {
-		log.Printf("[DEBUG] getOrderFromDB failed for order %s: %v", orderID, err)
 		return nil, err
 	}
-	log.Printf("[DEBUG] getOrderFromDB found order %s: customer=%s, status=%s, payment_id=%s", id, customerID, status, paymentID)
 	return map[string]any{
 		"order": map[string]any{
 			"id":              id,
@@ -1143,8 +1316,9 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 		// Get order information from database
 		orderInfo, err := getOrderFromDBByPaymentID(externalID)
 		if err != nil {
-			log.Printf("[Xendit Webhook] Failed to find order for payment_id %s: %v", externalID, err)
-			http.Error(w, "order not found", http.StatusNotFound)
+			log.Printf("[Xendit Webhook] No order found for payment_id %s (may be test/expired payment): %v", externalID, err)
+			// Return 200 OK for missing orders - this is normal for test/expired payments
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
@@ -1173,7 +1347,7 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Resolve the awakeable to continue the order workflow
-		var awakeableID string
+		var awakeableID sql.NullString
 		if postgres.DB != nil {
 			row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
 			if err := row.Scan(&awakeableID); err != nil {
@@ -1181,9 +1355,9 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if awakeableID != "" {
+		if awakeableID.Valid && awakeableID.String != "" {
 			// Resolve the awakeable using Restate's built-in awakeable resolution API
-			awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID)
+			awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID.String)
 			awakeableBody := "payment_completed"
 			awakeableBytes := []byte(fmt.Sprintf(`"%s"`, awakeableBody))
 
@@ -1193,13 +1367,27 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 			} else {
 				defer awakeableResp.Body.Close()
 				if awakeableResp.StatusCode >= 200 && awakeableResp.StatusCode < 300 {
-					log.Printf("[Xendit Webhook] Successfully resolved awakeable %s for order %s", awakeableID, orderID)
+					log.Printf("[Xendit Webhook] Successfully resolved awakeable %s for order %s", awakeableID.String, orderID)
+
+					// Update order status to PROCESSING after payment completion - use direct database update
+					if err := postgres.UpdateOrderStatusDB(orderID, orderpb.OrderStatus_PROCESSING); err != nil {
+						log.Printf("[Xendit Webhook] Failed to update order status to PROCESSING: %v", err)
+					} else {
+						log.Printf("[Xendit Webhook] Successfully updated order status to PROCESSING for order %s", orderID)
+					}
 				} else {
 					log.Printf("[Xendit Webhook] Failed to resolve awakeable, status: %d", awakeableResp.StatusCode)
 				}
 			}
 		} else {
 			log.Printf("[Xendit Webhook] No awakeable ID found for order %s", orderID)
+
+			// Even if no awakeable, still update order status to PROCESSING - use direct database update
+			if err := postgres.UpdateOrderStatusDB(orderID, orderpb.OrderStatus_PROCESSING); err != nil {
+				log.Printf("[Xendit Webhook] Failed to update order status to PROCESSING: %v", err)
+			} else {
+				log.Printf("[Xendit Webhook] Successfully updated order status to PROCESSING for order %s", orderID)
+			}
 		}
 
 		log.Printf("[Xendit Webhook] Successfully processed payment completion for order %s", orderID)
@@ -1210,8 +1398,9 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 		// Get order information from database
 		orderInfo, err := getOrderFromDBByPaymentID(externalID)
 		if err != nil {
-			log.Printf("[Xendit Webhook] Failed to find order for payment_id %s: %v", externalID, err)
-			http.Error(w, "order not found", http.StatusNotFound)
+			log.Printf("[Xendit Webhook] No order found for payment_id %s (may be test payment): %v", externalID, err)
+			// Return 200 OK for missing orders - this is normal for test payments
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 

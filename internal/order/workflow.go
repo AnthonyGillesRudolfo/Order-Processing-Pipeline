@@ -8,6 +8,7 @@ import (
 
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
+	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
 
@@ -31,7 +32,158 @@ func (e *StockValidationError) IsTerminalError() bool {
 	return true
 }
 
-// CreateOrder orchestrates the order process
+// Checkout orchestrates the order process and returns immediately after creating invoice
+func Checkout(ctx restate.WorkflowContext, req *orderpb.CheckoutRequest) (*orderpb.CheckoutResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] Starting checkout for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
+
+	// Step 1: Validate stock availability and calculate total amount
+	log.Printf("[Workflow %s] Step 1: Validating stock availability", orderId)
+	var totalAmount float64
+	for _, item := range req.Items {
+		// Get item details from merchant service to calculate proper total
+		merchantClient := restate.Object[*merchantpb.Item](ctx, "merchant.sv1.MerchantService", req.MerchantId, "GetItem")
+
+		// Create proper protobuf request using the generated types
+		itemReq := &merchantpb.GetItemRequest{
+			MerchantId: req.MerchantId,
+			ItemId:     item.ProductId,
+		}
+
+		itemProto, err := merchantClient.Request(itemReq)
+		if err != nil {
+			log.Printf("[Workflow %s] Item %s not found: %v", orderId, item.ProductId, err)
+			return nil, &StockValidationError{
+				ItemID:    item.ProductId,
+				Requested: item.Quantity,
+				Available: 0,
+				Message:   fmt.Sprintf("Item '%s' not found or unavailable", item.ProductId),
+			}
+		}
+
+		// Check stock availability
+		if itemProto.Quantity < item.Quantity {
+			return nil, &StockValidationError{
+				ItemID:    item.ProductId,
+				Requested: item.Quantity,
+				Available: itemProto.Quantity,
+				Message: fmt.Sprintf("Insufficient stock for item '%s': requested %d, available %d",
+					itemProto.Name, item.Quantity, itemProto.Quantity),
+			}
+		}
+
+		totalAmount += float64(item.Quantity) * itemProto.Price
+		log.Printf("[Workflow %s] Item %s validated: price=%.2f, stock=%d, quantity=%d",
+			orderId, item.ProductId, itemProto.Price, itemProto.Quantity, item.Quantity)
+	}
+
+	log.Printf("[Workflow %s] Stock validation passed, total amount: %.2f", orderId, totalAmount)
+
+	// Step 2: Deduct stock from inventory (using database transaction)
+	log.Printf("[Workflow %s] Step 2: Deducting stock from inventory", orderId)
+	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		return nil, postgres.DeductStockFromItems(req.MerchantId, req.Items)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to deduct stock: %w", err)
+	}
+
+	// Step 3: Create order in database
+	log.Printf("[Workflow %s] Step 3: Creating order in database", orderId)
+	restate.Set(ctx, "customer_id", req.CustomerId)
+	restate.Set(ctx, "status", orderpb.OrderStatus_PENDING)
+	restate.Set(ctx, "total_amount", totalAmount)
+	if req.MerchantId != "" {
+		restate.Set(ctx, "merchant_id", req.MerchantId)
+	}
+
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		log.Printf("[Workflow %s] Persisting order and items to database", orderId)
+		if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
+			return nil, err
+		}
+		return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
+	})
+	if err != nil {
+		// If order creation fails, we need to restore the deducted stock
+		log.Printf("[Workflow %s] Order creation failed, restoring stock", orderId)
+		_, restoreErr := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.RestoreStockToItems(req.MerchantId, req.Items)
+		})
+		if restoreErr != nil {
+			log.Printf("[Workflow %s] CRITICAL: Failed to restore stock after order creation failure: %v", orderId, restoreErr)
+		}
+		return nil, fmt.Errorf("failed to persist order to database: %w", err)
+	}
+
+	// Use Restate's deterministic random for payment ID to ensure workflow determinism
+	paymentId := restate.Rand(ctx).UUID().String()
+	paymentReq := &orderpb.ProcessPaymentRequest{
+		OrderId: orderId,
+		Amount:  totalAmount,
+		// No payment method - Xendit invoice handles all payment methods
+	}
+
+	log.Printf("[Workflow %s] Step 4: Processing payment", orderId)
+	paymentClient := restate.Object[*orderpb.ProcessPaymentResponse](ctx, "order.sv1.PaymentService", paymentId, "ProcessPayment", restate.WithProtoJSON)
+	paymentResp, err := paymentClient.Request(paymentReq)
+	if err != nil {
+		restate.Set(ctx, "status", orderpb.OrderStatus_CANCELLED)
+		_, _ = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_CANCELLED)
+		})
+		return nil, fmt.Errorf("payment failed: %w", err)
+	}
+
+	log.Printf("[Workflow %s] Payment initiated: %s", orderId, paymentResp.PaymentId)
+	restate.Set(ctx, "payment_id", paymentResp.PaymentId)
+	restate.Set(ctx, "payment_status", paymentResp.Status)
+	if paymentResp.InvoiceUrl != "" {
+		restate.Set(ctx, "invoice_url", paymentResp.InvoiceUrl)
+	}
+
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		if err := postgres.UpdateOrderPayment(orderId, paymentResp.PaymentId); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to update payment in database: %v", orderId, err)
+	}
+
+	// Create an awakeable to wait for payment completion signal later
+	log.Printf("[Workflow %s] Creating awakeable for future payment completion", orderId)
+	awakeable := restate.Awakeable[any](ctx)
+	awakeableId := awakeable.Id()
+	restate.Set(ctx, "payment_awakeable_id", awakeableId)
+
+	// Store the awakeable ID in the database so the webhook can access it
+	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+		// Store awakeable ID in orders table
+		_, err := postgres.DB.Exec(`UPDATE orders SET awakeable_id = $1 WHERE id = $2`, awakeableId, orderId)
+		return nil, err
+	})
+	if err != nil {
+		log.Printf("[Workflow %s] Warning: Failed to store awakeable ID in database: %v", orderId, err)
+	}
+	log.Printf("[Workflow %s] Awakeable ID stored: %s", orderId, awakeableId)
+
+	// Store payment and order IDs for webhook lookup
+	restate.Set(ctx, "payment_id", paymentResp.PaymentId)
+	restate.Set(ctx, "order_id", orderId)
+
+	// Return immediately with invoice link - do not await payment completion
+	log.Printf("[Workflow %s] Returning immediately with invoice link: %s", orderId, paymentResp.InvoiceUrl)
+	return &orderpb.CheckoutResponse{
+		OrderId:     orderId,
+		PaymentId:   paymentResp.PaymentId,
+		InvoiceLink: paymentResp.InvoiceUrl,
+		Status:      "pending",
+	}, nil
+}
+
+// CreateOrder orchestrates the order process (legacy method - kept for backward compatibility)
 func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (*orderpb.CreateOrderResponse, error) {
 	orderId := restate.Key(ctx)
 	log.Printf("[Workflow %s] Creating order for customer: %s merchant: %s", orderId, req.CustomerId, req.MerchantId)
@@ -122,12 +274,8 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 	paymentId := restate.Rand(ctx).UUID().String()
 	paymentReq := &orderpb.ProcessPaymentRequest{
 		OrderId: orderId,
-		PaymentMethod: &orderpb.PaymentMethod{
-			Method: &orderpb.PaymentMethod_CreditCard{
-				CreditCard: &orderpb.CreditCard{CardNumber: "****-****-****-1234", CardholderName: "Customer"},
-			},
-		},
-		Amount: totalAmount,
+		Amount:  totalAmount,
+		// No payment method - Xendit invoice handles all payment methods
 	}
 
 	log.Printf("[Workflow %s] Step 2: Processing payment", orderId)
@@ -261,6 +409,58 @@ func UpdateOrderStatus(ctx restate.WorkflowContext, req *orderpb.UpdateOrderStat
 		return &orderpb.UpdateOrderStatusResponse{Success: false, Message: fmt.Sprintf("Failed to update status in database: %v", err)}, nil
 	}
 	return &orderpb.UpdateOrderStatusResponse{Success: true, Message: "Order status updated successfully"}, nil
+}
+
+// OnPaymentUpdate handles payment status updates from webhooks
+func OnPaymentUpdate(ctx restate.WorkflowContext, req *orderpb.OnPaymentUpdateRequest) (*orderpb.ContinueAfterPaymentResponse, error) {
+	orderId := restate.Key(ctx)
+	log.Printf("[Workflow %s] OnPaymentUpdate invoked for payment: %s with status: %s", orderId, req.PaymentId, req.Status)
+
+	// Map Xendit status to internal status using existing mapping function
+	ap2Status := payment.MapXenditStatusToAP2(req.Status)
+
+	// Get the awakeable ID from the database (stored by Checkout workflow)
+	var awakeableId string
+	if postgres.DB != nil {
+		err := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderId).Scan(&awakeableId)
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to get awakeable ID from database: %v", orderId, err)
+			return &orderpb.ContinueAfterPaymentResponse{Ok: false}, fmt.Errorf("awakeable ID not found in database: %w", err)
+		}
+	}
+
+	if awakeableId == "" {
+		log.Printf("[Workflow %s] Warning: Awakeable ID is empty", orderId)
+		return &orderpb.ContinueAfterPaymentResponse{Ok: false}, fmt.Errorf("awakeable ID is empty")
+	}
+
+	// Resolve the awakeable to signal payment completion/failure
+	// This will unblock any workflow waiting on the awakeable
+	restate.ResolveAwakeable(ctx, awakeableId, ap2Status)
+	log.Printf("[Workflow %s] Awakeable resolved with status: %s", orderId, ap2Status)
+
+	// Update order status based on payment result
+	if ap2Status == "completed" {
+		restate.Set(ctx, "status", orderpb.OrderStatus_PROCESSING)
+		_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_PROCESSING)
+		})
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to set PROCESSING: %v", orderId, err)
+		}
+		log.Printf("[Workflow %s] Order marked as PROCESSING after payment completion", orderId)
+	} else if ap2Status == "failed" {
+		restate.Set(ctx, "status", orderpb.OrderStatus_CANCELLED)
+		_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
+			return nil, postgres.UpdateOrderStatusDB(orderId, orderpb.OrderStatus_CANCELLED)
+		})
+		if err != nil {
+			log.Printf("[Workflow %s] Warning: Failed to set CANCELLED: %v", orderId, err)
+		}
+		log.Printf("[Workflow %s] Order marked as CANCELLED after payment failure", orderId)
+	}
+
+	return &orderpb.ContinueAfterPaymentResponse{Ok: true}, nil
 }
 
 // ContinueAfterPayment resumes the order once payment is completed (simulated)

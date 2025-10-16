@@ -37,7 +37,7 @@ func ProcessPayment(ctx restate.ObjectContext, req *orderpb.ProcessPaymentReques
 		log.Printf("[Payment Object %s] Continuing processing for pending payment to ensure DB/invoice populated", paymentId)
 	}
 
-	paymentMethod := "UNKNOWN"
+	paymentMethod := "XENDIT_INVOICE"
 	if req.PaymentMethod != nil {
 		switch req.PaymentMethod.Method.(type) {
 		case *orderpb.PaymentMethod_CreditCard:
@@ -155,6 +155,7 @@ func MarkPaymentCompleted(ctx restate.ObjectContext, req *orderpb.MarkPaymentCom
 	_, _ = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		return nil, postgres.UpdatePaymentStatus(paymentId, orderpb.PaymentStatus_PAYMENT_COMPLETED)
 	})
+
 	return &orderpb.MarkPaymentCompletedResponse{Ok: true}, nil
 }
 
