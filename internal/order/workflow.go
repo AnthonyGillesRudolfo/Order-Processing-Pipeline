@@ -13,6 +13,7 @@ import (
 	"github.com/restatedev/sdk-go/server"
 
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
+	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/events"
 )
 
 // StockValidationError represents a non-retryable stock validation error
@@ -174,7 +175,27 @@ func Checkout(ctx restate.WorkflowContext, req *orderpb.CheckoutRequest) (*order
 	restate.Set(ctx, "order_id", orderId)
 
 	// Return immediately with invoice link - do not await payment completion
+
+	producer := events.NewProducer()
+	defer producer.Close()
+
+	_ = producer.Publish(ctx, "orders.v1", orderId, events.Envelope{
+		EventType:    "OrderCreated",
+		EventVersion: "v1",
+		AggregateID:  orderId,
+		Data: map[string]any{
+		  "orderId":     orderId,
+		  "paymentId":   paymentResp.PaymentId,
+		  "invoiceUrl":  paymentResp.InvoiceUrl,
+		  "customerId":  req.CustomerId,
+		  "merchantId":  req.MerchantId,
+		  "totalAmount": totalAmount,
+		  "status":      "PENDING",
+		},
+	  })
+
 	log.Printf("[Workflow %s] Returning immediately with invoice link: %s", orderId, paymentResp.InvoiceUrl)
+
 	return &orderpb.CheckoutResponse{
 		OrderId:     orderId,
 		PaymentId:   paymentResp.PaymentId,

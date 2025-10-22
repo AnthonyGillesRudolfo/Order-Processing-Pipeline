@@ -24,10 +24,13 @@ import (
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
 	internalshipping "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/shipping"
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
+
+	events "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/events"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
+	kafka "github.com/segmentio/kafka-go"
 )
 
 // AP2 response types (copied from internal/ap2/handlers.go)
@@ -41,6 +44,114 @@ type AP2ExecuteResult struct {
 
 type AP2Envelope[T any] struct {
 	Result T `json:"result"`
+}
+
+// startOrdersConsumer subscribes to orders.v1 and processes events
+func startOrdersConsumer() {
+	brokers := getenv("KAFKA_BROKERS", "localhost:9092")
+
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{brokers},
+		Topic:    "orders.v1",
+		GroupID:  "order-workers", // consumer group (offsets tracked)
+		MinBytes: 1e3, MaxBytes: 10e6,
+	})
+
+	log.Println("[orders.v1] consumer started (group=order-workers)")
+	for {
+		msg, err := r.ReadMessage(context.Background())
+		if err != nil {
+			log.Printf("[orders.v1] read error: %v", err)
+			_ = r.Close()
+			return
+		}
+
+		var evt events.Envelope
+		if err := json.Unmarshal(msg.Value, &evt); err != nil {
+			log.Printf("[orders.v1] bad JSON: %v; payload=%s", err, string(msg.Value))
+			continue
+		}
+
+		// Route by event type
+		switch evt.EventType {
+		case "OrderCreated":
+			handleOrderCreated(evt)
+		default:
+			log.Printf("[orders.v1] ignored eventType=%s key=%s", evt.EventType, string(msg.Key))
+		}
+	}
+}
+
+func startPaymentsConsumer() {
+	brokers := getenv("KAFKA_BROKERS", "localhost:9092")
+
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{brokers},
+		Topic:    "payments.v1",
+		GroupID:  "payment-workers", // consumer group (offsets tracked)
+		MinBytes: 1e3, MaxBytes: 10e6,
+	})
+
+	log.Println("[payments.v1] consumer started (group=payment-workers)")
+	for {
+		msg, err := r.ReadMessage(context.Background())
+		if err != nil {
+			log.Printf("[payments.v1] read error: %v", err)
+			_ = r.Close()
+			return
+		}
+
+		var evt events.Envelope
+		if err := json.Unmarshal(msg.Value, &evt); err != nil {
+			log.Printf("[payments.v1] bad JSON: %v; payload=%s", err, string(msg.Value))
+			continue
+		}
+
+		// Route by event type
+		switch evt.EventType {
+		case "OrderCreated":
+			handleOrderCreated(evt)
+		default:
+			log.Printf("[payments.v1] ignored eventType=%s key=%s", evt.EventType, string(msg.Key))
+		}
+	}
+}
+
+// Your first handler: make it idempotent when you add side effects
+func handleOrderCreated(evt events.Envelope) {
+	// Example: just log for now (prove consumption works)
+	data := toMap(evt.Data)
+	log.Printf("[OrderCreated] orderId=%s total=%.2f invoice=%s",
+		evt.AggregateID,
+		toFloat(data["totalAmount"]),
+		toString(data["invoiceUrl"]),
+	)
+}
+
+// small helpers for robust logging
+func toString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func toMap(v interface{}) map[string]interface{} {
+	if m, ok := v.(map[string]interface{}); ok { return m }
+	return map[string]interface{}{}
+}
+
+func toFloat(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	default:
+		return 0
+	}
 }
 
 func main() {
@@ -89,6 +200,9 @@ func main() {
 			log.Printf("Web UI/API server error: %v", err)
 		}
 	}()
+
+	go startOrdersConsumer()
+	go startPaymentsConsumer()
 
 	// Create Restate server
 	srv := server.NewRestate()
@@ -341,8 +455,9 @@ func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Find the order ID by payment ID from database
 	var orderID string
+	var customerID string
 	if postgres.DB != nil {
-		err := postgres.DB.QueryRow(`SELECT order_id FROM orders WHERE payment_id = $1`, externalID).Scan(&orderID)
+		err := postgres.DB.QueryRow(`SELECT order_id, customer_id FROM orders WHERE payment_id = $1`, externalID).Scan(&orderID, &customerID)
 		if err != nil {
 			log.Printf("[Webhook] Failed to find order for payment_id %s: %v", externalID, err)
 			http.Error(w, "order not found", http.StatusNotFound)
@@ -494,7 +609,7 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 
 	// Call Restate runtime HTTP endpoint directly
 	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
-	url := fmt.Sprintf("%s/order.sv1.OrderService/%s/CreateOrder", runtimeURL, orderID)
+	url := fmt.Sprintf("%s/order.sv1.OrderService/%s/Checkout", runtimeURL, orderID)
 
 	resp, err := http.Post(url, "application/json", bytes.NewReader(inBytes))
 	if err != nil {
@@ -1306,12 +1421,44 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var totalAmount float64
+	var invoiceURL string
+	var orderID string
+	var customerID string
+
+	if info, err := getOrderFromDBByPaymentID(externalID); err == nil {
+		if ord, ok := info["order"].(map[string]any); ok {
+			if id, ok := ord["id"].(string); ok {orderID = id }
+			if v, ok := ord["total_amount"].(float64); ok { totalAmount = v }
+			if cid, ok := ord["customer_id"].(string); ok { customerID = cid }
+		}
+		if pay, ok := info["payment"].(map[string]any); ok {
+			if v, ok := pay["invoice_url"].(string); ok { invoiceURL = v }
+		}
+	}
+
 	log.Printf("[Xendit Webhook] Processing callback: external_id=%s, status=%s, invoice_id=%s", externalID, status, invoiceID)
 
 	// Handle different payment statuses
 	switch status {
 	case "PAID":
 		log.Printf("[Xendit Webhook] Payment completed for external_id: %s", externalID)
+		prod := events.NewProducer()
+		defer prod.Close()
+		
+		_ = prod.Publish(r.Context(), "payments.v1", orderID, events.Envelope{
+			EventType:    "PaymentCompleted",
+			EventVersion: "v1",
+			AggregateID:  orderID,
+			Data: map[string]any{
+				"orderId":    orderID,
+				"paymentId":  externalID,
+				"customerId": customerID, // you can fetch this with a small query
+				"invoiceURL": invoiceURL,
+				"totalAmount": totalAmount,
+				"provider":   "xendit",
+			},
+		})
 
 		// Get order information from database
 		orderInfo, err := getOrderFromDBByPaymentID(externalID)
@@ -1394,6 +1541,23 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 
 	case "EXPIRED":
 		log.Printf("[Xendit Webhook] Payment expired for external_id: %s", externalID)
+
+		prod := events.NewProducer()
+		defer prod.Close()
+		
+		_ = prod.Publish(r.Context(), "payments.v1", orderID, events.Envelope{
+			EventType:    "PaymentExpired",
+			EventVersion: "v1",
+			AggregateID:  orderID,
+			Data: map[string]any{
+				"orderId":    orderID,
+				"paymentId":  externalID,
+				"customerId": customerID, // you can fetch this with a small query
+				"invoiceURL": invoiceURL,
+				"totalAmount": totalAmount,
+				"provider":   "xendit",
+			},
+		})
 
 		// Get order information from database
 		orderInfo, err := getOrderFromDBByPaymentID(externalID)
