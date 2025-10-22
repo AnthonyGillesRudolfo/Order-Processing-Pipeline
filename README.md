@@ -1,6 +1,6 @@
 # Order Processing Pipeline
 
-A Restate-based order processing system with Xendit payment integration and automated webhook handling.
+A Restate-based order processing system with Xendit payment integration, AP2 protocol support, and automated webhook handling.
 
 ## 🚀 Running the Application
 
@@ -117,6 +117,37 @@ curl http://localhost:4040/api/tunnels
 # Verify webhook URL in Xendit dashboard
 ```
 
+## 🔌 AP2 Integration
+
+The system now includes AP2 (Payment Protocol) integration for seamless checkout experiences:
+
+### MCP Tools
+- `checkout_cart(customer_id)` - Create Xendit invoice for cart checkout
+- `view_cart(customer_id)` - View cart contents
+- `add_to_cart(customer_id, merchant_id, items)` - Add items to cart
+- `update_cart_item(customer_id, product_id, quantity)` - Update item quantity
+- `remove_from_cart(customer_id, product_ids)` - Remove items from cart
+
+### AP2 Endpoints
+- `POST /ap2/intents` - Create payment intent
+- `POST /ap2/authorize` - Authorize payment
+- `POST /ap2/execute` - Execute payment and get invoice link
+- `GET /ap2/status/{payment_id}` - Get payment status
+- `POST /ap2/refunds` - Process refunds
+
+### Setup
+```bash
+# Set AP2 adapter URL
+export AP2_BASE=http://127.0.0.1:7010
+
+# Run AP2 adapter (separate service)
+# Run MCP server
+cd mcp-server
+python main.py
+```
+
+See [AP2 Integration Guide](docs/AP2_INTEGRATION.md) for detailed documentation.
+
 ## 📚 API Endpoints
 
 - `POST /api/checkout` - Create new order
@@ -129,6 +160,8 @@ curl http://localhost:4040/api/tunnels
 
 - ✅ Order creation and processing
 - ✅ Xendit payment integration
+- ✅ AP2 payment protocol support
+- ✅ MCP server with cart management tools
 - ✅ Automated webhook handling
 - ✅ Real-time order tracking
 - ✅ Modern web UI

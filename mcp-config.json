@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+      "order-processing": {
+        "command": "uv",
+        "args": [
+          "--directory",
+          "/Users/jocelinearaki/Documents/Project/test-restate/order-processing-pipeline/mcp-server",
+          "run",
+          "main.py"
+        ]
+      }
+    }
+}

@@ -33,7 +33,6 @@ func getItemsShared(ctx restate.ObjectSharedContext) ([]*merchantpb.Item, error)
 	}
 
 	// Try to load from database on first access
-	log.Printf("[Merchant %s] Loading items from database", merchantID)
 	dbItems, dbErr := postgres.GetMerchantItems(merchantID)
 	if dbErr != nil {
 		log.Printf("[Merchant %s] Error loading from database: %v, returning empty", merchantID, dbErr)
