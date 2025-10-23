@@ -1,0 +1,100 @@
+[
+    {
+        "uri": "formatter-tests/features/scenario_with_attachment.feature",
+        "id": "feature-with-attachment",
+        "keyword": "Feature",
+        "name": "feature with attachment",
+        "description": "  describes\n  an attachment\n  feature",
+        "line": 1,
+        "elements": [
+            {
+                "id": "feature-with-attachment;scenario-with-attachment",
+                "keyword": "Scenario",
+                "name": "scenario with attachment",
+                "description": "",
+                "line": 6,
+                "type": "scenario",
+                "steps": [
+                    {
+                        "keyword": "Given ",
+                        "name": "a step with a single attachment call for multiple attachments",
+                        "line": 7,
+                        "match": {
+                            "location": "fmt_output_test.go:119"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 0
+                        },
+                        "embeddings": [
+                            {
+                                "name": "Before Scenario Attachment 1",
+                                "mime_type": "text/plain",
+                                "data": "QmVmb3JlU2NlbmFyaW9BdHRhY2htZW50"
+                            },
+                            {
+                                "name": "Before Step Attachment 3",
+                                "mime_type": "text/plain",
+                                "data": "QmVmb3JlU3RlcEF0dGFjaG1lbnQ="
+                            },
+                            {
+                                "name": "TheFilename1",
+                                "mime_type": "text/plain",
+                                "data": "VGhlRGF0YTE="
+                            },
+                            {
+                                "name": "TheFilename2",
+                                "mime_type": "text/plain",
+                                "data": "VGhlRGF0YTI="
+                            },
+                            {
+                                "name": "After Step Attachment 4",
+                                "mime_type": "text/plain",
+                                "data": "QWZ0ZXJTdGVwQXR0YWNobWVudA=="
+                            }
+                        ]
+                    },
+                    {
+                        "keyword": "And ",
+                        "name": "a step with multiple attachment calls",
+                        "line": 8,
+                        "match": {
+                            "location": "fmt_output_test.go:119"
+                        },
+                        "result": {
+                            "status": "passed",
+                            "duration": 0
+                        },
+                        "embeddings": [
+                            {
+                                "name": "Before Step Attachment 3",
+                                "mime_type": "text/plain",
+                                "data": "QmVmb3JlU3RlcEF0dGFjaG1lbnQ="
+                            },
+                            {
+                                "name": "TheFilename3",
+                                "mime_type": "text/plain",
+                                "data": "VGhlRGF0YTE="
+                            },
+                            {
+                                "name": "TheFilename4",
+                                "mime_type": "text/plain",
+                                "data": "VGhlRGF0YTI="
+                            },
+                            {
+                                "name": "After Step Attachment 4",
+                                "mime_type": "text/plain",
+                                "data": "QWZ0ZXJTdGVwQXR0YWNobWVudA=="
+                            },
+                            {
+                                "name": "After Scenario Attachment 2",
+                                "mime_type": "text/plain",
+                                "data": "QWZ0ZXJTY2VuYXJpb0F0dGFjaG1lbnQ="
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]
