@@ -31,6 +31,9 @@ import (
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
 	kafka "github.com/segmentio/kafka-go"
+
+	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // AP2 response types (copied from internal/ap2/handlers.go)
@@ -137,7 +140,9 @@ func toString(v interface{}) string {
 }
 
 func toMap(v interface{}) map[string]interface{} {
-	if m, ok := v.(map[string]interface{}); ok { return m }
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
 	return map[string]interface{}{}
 }
 
@@ -156,6 +161,10 @@ func toFloat(v interface{}) float64 {
 
 func main() {
 	log.Println("Starting Order Processing Pipeline (modular server)...")
+
+	// Initialize OpenTelemetry
+	cleanup := telemetry.InitTracer("order-processing-pipeline")
+	defer cleanup()
 
 	// Load .env if present
 	_ = godotenv.Load()
@@ -320,24 +329,24 @@ func startWebUIAndAPI() error {
 	mux.Handle("/", fileServer)
 
 	// API
-	mux.HandleFunc("/api/checkout", handleCheckout)
-	mux.HandleFunc("/api/orders", handleOrdersList)
-	mux.HandleFunc("/api/orders/", handleOrders)
-	mux.HandleFunc("/api/merchants/", handleMerchantAPI)
-	mux.HandleFunc("/api/cart/", handleCartAPI)
-	mux.HandleFunc("/api/debug/fix-orders", handleFixOrders)
-	mux.HandleFunc("/api/webhooks/xendit", handleXenditWebhook)
+	mux.Handle("/api/checkout", otelhttp.NewHandler(http.HandlerFunc(handleCheckout), "checkout"))
+	mux.Handle("/api/orders", otelhttp.NewHandler(http.HandlerFunc(handleOrdersList), "orders-list"))
+	mux.Handle("/api/orders/", otelhttp.NewHandler(http.HandlerFunc(handleOrders), "orders"))
+	mux.Handle("/api/merchants/", otelhttp.NewHandler(http.HandlerFunc(handleMerchantAPI), "merchant-api"))
+	mux.Handle("/api/cart/", otelhttp.NewHandler(http.HandlerFunc(handleCartAPI), "cart-api"))
+	mux.Handle("/api/debug/fix-orders", otelhttp.NewHandler(http.HandlerFunc(handleFixOrders), "fix-orders"))
+	mux.Handle("/api/webhooks/xendit", otelhttp.NewHandler(http.HandlerFunc(handleXenditWebhook), "xendit-webhook"))
 
 	// AP2 Endpoints
-	mux.HandleFunc("/ap2/mandates", internalap2.HandleCreateMandate)
-	mux.HandleFunc("/ap2/mandates/", internalap2.HandleGetMandate)
-	mux.HandleFunc("/ap2/intents", internalap2.HandleCreateIntent)
-	mux.HandleFunc("/ap2/authorize", internalap2.HandleAuthorize)
-	mux.HandleFunc("/ap2/execute", handleAP2Execute)
-	mux.HandleFunc("/ap2/status/", internalap2.HandleGetStatus)
-	mux.HandleFunc("/webhooks/payment", handlePaymentWebhook)
-	mux.HandleFunc("/ap2/refunds", internalap2.HandleRefund)
-	mux.HandleFunc("/ap2/refunds/", internalap2.HandleGetRefund)
+	mux.Handle("/ap2/mandates", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleCreateMandate), "ap2-create-mandate"))
+	mux.Handle("/ap2/mandates/", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleGetMandate), "ap2-get-mandate"))
+	mux.Handle("/ap2/intents", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleCreateIntent), "ap2-create-intent"))
+	mux.Handle("/ap2/authorize", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleAuthorize), "ap2-authorize"))
+	mux.Handle("/ap2/execute", otelhttp.NewHandler(http.HandlerFunc(handleAP2Execute), "ap2-execute"))
+	mux.Handle("/ap2/status/", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleGetStatus), "ap2-get-status"))
+	mux.Handle("/webhooks/payment", otelhttp.NewHandler(http.HandlerFunc(handlePaymentWebhook), "payment-webhook"))
+	mux.Handle("/ap2/refunds", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleRefund), "ap2-refund"))
+	mux.Handle("/ap2/refunds/", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleGetRefund), "ap2-get-refund"))
 
 	log.Println("Web UI available on :3000 (serving ./web)")
 	return http.ListenAndServe(":3000", withCORS(mux))
@@ -1428,12 +1437,20 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if info, err := getOrderFromDBByPaymentID(externalID); err == nil {
 		if ord, ok := info["order"].(map[string]any); ok {
-			if id, ok := ord["id"].(string); ok {orderID = id }
-			if v, ok := ord["total_amount"].(float64); ok { totalAmount = v }
-			if cid, ok := ord["customer_id"].(string); ok { customerID = cid }
+			if id, ok := ord["id"].(string); ok {
+				orderID = id
+			}
+			if v, ok := ord["total_amount"].(float64); ok {
+				totalAmount = v
+			}
+			if cid, ok := ord["customer_id"].(string); ok {
+				customerID = cid
+			}
 		}
 		if pay, ok := info["payment"].(map[string]any); ok {
-			if v, ok := pay["invoice_url"].(string); ok { invoiceURL = v }
+			if v, ok := pay["invoice_url"].(string); ok {
+				invoiceURL = v
+			}
 		}
 	}
 
@@ -1445,18 +1462,18 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[Xendit Webhook] Payment completed for external_id: %s", externalID)
 		prod := events.NewProducer()
 		defer prod.Close()
-		
+
 		_ = prod.Publish(r.Context(), "payments.v1", orderID, events.Envelope{
 			EventType:    "PaymentCompleted",
 			EventVersion: "v1",
 			AggregateID:  orderID,
 			Data: map[string]any{
-				"orderId":    orderID,
-				"paymentId":  externalID,
-				"customerId": customerID, // you can fetch this with a small query
-				"invoiceURL": invoiceURL,
+				"orderId":     orderID,
+				"paymentId":   externalID,
+				"customerId":  customerID, // you can fetch this with a small query
+				"invoiceURL":  invoiceURL,
 				"totalAmount": totalAmount,
-				"provider":   "xendit",
+				"provider":    "xendit",
 			},
 		})
 
@@ -1544,18 +1561,18 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 
 		prod := events.NewProducer()
 		defer prod.Close()
-		
+
 		_ = prod.Publish(r.Context(), "payments.v1", orderID, events.Envelope{
 			EventType:    "PaymentExpired",
 			EventVersion: "v1",
 			AggregateID:  orderID,
 			Data: map[string]any{
-				"orderId":    orderID,
-				"paymentId":  externalID,
-				"customerId": customerID, // you can fetch this with a small query
-				"invoiceURL": invoiceURL,
+				"orderId":     orderID,
+				"paymentId":   externalID,
+				"customerId":  customerID, // you can fetch this with a small query
+				"invoiceURL":  invoiceURL,
 				"totalAmount": totalAmount,
-				"provider":   "xendit",
+				"provider":    "xendit",
 			},
 		})
 

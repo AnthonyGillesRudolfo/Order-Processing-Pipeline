@@ -100,7 +100,7 @@ func Checkout(ctx restate.WorkflowContext, req *orderpb.CheckoutRequest) (*order
 
 	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		log.Printf("[Workflow %s] Persisting order and items to database", orderId)
-		if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
+		if err := postgres.InsertOrder(ctx, orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
 			return nil, err
 		}
 		return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
@@ -272,7 +272,7 @@ func CreateOrder(ctx restate.WorkflowContext, req *orderpb.CreateOrderRequest) (
 
 	_, err = restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
 		log.Printf("[Workflow %s] Persisting order and items to database", orderId)
-		if err := postgres.InsertOrder(orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
+		if err := postgres.InsertOrder(ctx, orderId, req.CustomerId, req.MerchantId, orderpb.OrderStatus_PENDING, totalAmount); err != nil {
 			return nil, err
 		}
 		return nil, postgres.InsertOrderItems(orderId, req.MerchantId, req.Items)
