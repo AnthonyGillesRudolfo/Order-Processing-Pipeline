@@ -32,6 +32,7 @@ run: db-env
 	ORDER_DB_USER=$(ORDER_DB_USER) \
 	ORDER_DB_PASSWORD=$(ORDER_DB_PASSWORD) \
 	go run ./cmd/server
+
 # Simple SQL-based migrations using psql (legacy)
 migrate-up:
 	@[ -f db/migrations/000001_init_core.up.sql ] || (echo "No up migration found" && exit 1)

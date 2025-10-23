@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -9,6 +10,11 @@ import (
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
 	_ "github.com/lib/pq"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DatabaseConfig holds the database connection configuration
@@ -23,8 +29,38 @@ type DatabaseConfig struct {
 // DB is the global database connection pool
 var DB *sql.DB
 
+// tracer for database operations
+var tracer trace.Tracer
+
+// initTracer initializes the database tracer
+func initTracer() {
+	tracer = otel.Tracer("order-processing-pipeline/database")
+}
+
+// traceDBOperation creates a span for database operations
+func traceDBOperation(ctx context.Context, operation, query string) (context.Context, trace.Span) {
+	if tracer == nil {
+		initTracer()
+	}
+
+	spanName := fmt.Sprintf("db.%s", operation)
+	ctx, span := tracer.Start(ctx, spanName)
+
+	span.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", operation),
+		attribute.String("db.statement", query),
+		semconv.DBSystemPostgreSQL,
+	)
+
+	return ctx, span
+}
+
 // InitDatabase initializes the database connection pool and creates tables
 func InitDatabase(config DatabaseConfig) error {
+	// Initialize tracer
+	initTracer()
+
 	// Build connection string
 	connStr := fmt.Sprintf(
 		"host=%s port=%d dbname=%s user=%s password=%s sslmode=disable",
@@ -70,7 +106,7 @@ func CloseDatabase() error {
 }
 
 // Order ops
-func InsertOrder(orderID, customerID, merchantID string, status orderpb.OrderStatus, totalAmount float64) error {
+func InsertOrder(ctx context.Context, orderID, customerID, merchantID string, status orderpb.OrderStatus, totalAmount float64) error {
 	query := `
 		INSERT INTO orders (id, customer_id, status, total_amount)
         VALUES ($1, $2, $3, $4)
@@ -80,13 +116,23 @@ func InsertOrder(orderID, customerID, merchantID string, status orderpb.OrderSta
 			total_amount = EXCLUDED.total_amount,
 			updated_at = CURRENT_TIMESTAMP
 	`
+
+	ctx, span := traceDBOperation(ctx, "insert", query)
+	defer span.End()
+
 	// Update merchant_id separately to keep backward compatibility with existing params order
-	_, err := DB.Exec(query, orderID, customerID, status.String(), totalAmount)
+	_, err := DB.ExecContext(ctx, query, orderID, customerID, status.String(), totalAmount)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
 	if merchantID != "" {
-		if _, err := DB.Exec(`UPDATE orders SET merchant_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, merchantID, orderID); err != nil {
+		updateQuery := `UPDATE orders SET merchant_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+		ctx, updateSpan := traceDBOperation(ctx, "update", updateQuery)
+		_, err := DB.ExecContext(ctx, updateQuery, merchantID, orderID)
+		updateSpan.End()
+		if err != nil {
+			updateSpan.RecordError(err)
 			return fmt.Errorf("failed to set order merchant_id: %w", err)
 		}
 	}
