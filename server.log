@@ -1,0 +1,28 @@
+2025/10/22 20:29:24 Starting Order Processing Pipeline (modular server)...
+2025/10/22 20:29:24 OpenTelemetry initialized for service: order-processing-pipeline
+2025/10/22 20:29:24 Connecting to PostgreSQL database...
+2025/10/22 20:29:24 Successfully connected to PostgreSQL database: orderpipeline
+2025/10/22 20:29:24 Database connection established successfully
+2025/10/22 20:29:24 Restate server listening on :9081
+2025/10/22 20:29:24 
+2025/10/22 20:29:24 Service Architecture:
+2025/10/22 20:29:24   - OrderService: WORKFLOW (keyed by order ID)
+2025/10/22 20:29:24   - PaymentService: VIRTUAL OBJECT (keyed by payment ID)
+2025/10/22 20:29:24   - ShippingService: VIRTUAL OBJECT (keyed by shipment ID)
+2025/10/22 20:29:24   - MerchantService: VIRTUAL OBJECT (keyed by merchant ID)
+2025/10/22 20:29:24   - CartService: VIRTUAL OBJECT (keyed by customer ID)
+2025/10/22 20:29:24   - AP2 Endpoints: HTTP API (/ap2/mandates, /ap2/intents, /ap2/authorize, /ap2/execute, /ap2/refunds)
+2025/10/22 20:29:24 
+2025/10/22 20:29:24 Register with Restate:
+2025/10/22 20:29:24   restate deployments register http://localhost:9081
+2025/10/22 20:29:24 
+2025/10/22 20:29:24 Open the test UI:
+2025/10/22 20:29:24   http://localhost:3000
+2025/10/22 20:29:24 
+2025/10/22 20:29:24 Web UI available on :3000 (serving ./web)
+2025/10/22 20:29:24 Web UI/API server error: listen tcp :3000: bind: address already in use
+2025/10/22 20:29:24 WARN Accepting requests without validating request signatures; handler access must be restricted
+2025/10/22 20:29:24 [orders.v1] consumer started (group=order-workers)
+2025/10/22 20:29:24 [payments.v1] consumer started (group=payment-workers)
+2025/10/22 20:29:24 Server error: failed to listen on address :9081: listen tcp :9081: bind: address already in use
+exit status 1
