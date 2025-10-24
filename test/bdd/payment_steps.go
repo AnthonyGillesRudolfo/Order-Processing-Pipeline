@@ -1,6 +1,7 @@
 package bdd
 
 import (
+    "context"
 	"fmt"
 	"math"
 	"strconv"
@@ -29,7 +30,7 @@ func (w *PipelineWorld) ensureOrderRecord(orderID, customerID, amountStr string)
 		return fmt.Errorf("invalid amount: %w", err)
 	}
 
-	if err := postgresdb.InsertOrder(orderID, customerID, "", orderpb.OrderStatus_PENDING, amount); err != nil {
+	if err := postgresdb.InsertOrder(context.Background(), orderID, customerID, "", orderpb.OrderStatus_PENDING, amount); err != nil {
 		return fmt.Errorf("insert order: %w", err)
 	}
 	return nil
