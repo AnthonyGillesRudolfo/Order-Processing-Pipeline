@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package merchant.sv1;
 
-option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1;merchantpb";
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1;merchantpb";
 
 // Merchant domain
 message Merchant {
@@ -93,5 +93,4 @@ service MerchantService {
   rpc UpdateItem(UpdateItemRequest) returns (UpdateItemResponse);
   rpc DeleteItem(DeleteItemRequest) returns (DeleteItemResponse);
 }
-
 

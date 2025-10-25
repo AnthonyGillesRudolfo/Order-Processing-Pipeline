@@ -1,6 +1,8 @@
 MODULE := $(shell go list -m)
 
-.PHONY: proto run migrate-up migrate-down db-env migrate-create migrate-up-cli migrate-down-cli migrate-force
+.PHONY: buf-lint buf-generate buf-breaking proto proto-check-clean run migrate-up migrate-down db-env migrate-create migrate-up-cli migrate-down-cli migrate-force
+
+BUF_CACHE_DIR ?= .bufcache
 
 # Database environment (override via env)
 ORDER_DB_HOST ?= localhost
@@ -13,15 +15,28 @@ ORDER_DB_PASSWORD ?=
 db-env:
 	@echo "Using DB: host=$(ORDER_DB_HOST) port=$(ORDER_DB_PORT) name=$(ORDER_DB_NAME) user=$(ORDER_DB_USER)"
 
-# Generate Go + Restate code from all proto files
-proto:
-	@rm -rf gen && mkdir -p gen
-	@protoc -I api \
-	  --go_out=. \
-	  --go-restate_out=. \
-	  --go_opt=module=github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline \
-	  --go-restate_opt=module=github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline \
-	  common.proto order_service.proto payment_service.proto shipping_service.proto merchant.proto
+# Buf helpers
+buf-lint:
+	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf lint
+
+buf-generate:
+	@rm -rf gen/go && mkdir -p gen/go
+	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf generate
+
+buf-breaking:
+	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf breaking --against '../.git#branch=master,subdir=api'
+
+# Generate Go code via buf
+proto: buf-lint buf-generate buf-breaking
+	@echo "Protos linted, generated, and checked for breaking changes."
+
+proto-check-clean:
+	@git config --global --add safe.directory $(PWD)
+	@if ! git diff --quiet; then \
+	  echo 'Protobuf outputs are not up to date. Run "make proto" and commit changes.'; \
+	  git status --porcelain; \
+	  exit 1; \
+	fi
 # Run your app
 run: db-env
 	unset PGREQUIRESSL && \

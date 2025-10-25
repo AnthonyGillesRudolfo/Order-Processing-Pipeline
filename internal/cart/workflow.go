@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
+	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
 	restate "github.com/restatedev/sdk-go"
 )
 

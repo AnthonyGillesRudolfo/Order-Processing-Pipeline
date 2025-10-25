@@ -99,7 +99,7 @@ func handlePaymentExpired(sender email.Sender, evt events.Envelope) {
 	to := getenv("DEMO_TO_EMAIL", "test@example.local")
 
 	body := email.RenderPaymentExpiredEmail(orderID, total, invoiceURL)
-	if err := sender.Send(to, "Your Payment Confirmation", body); err != nil {
+	if err := sender.Send(to, "Payment Expired Confirmation", body); err != nil {
 		log.Printf("[email-worker] send failed: %v", err)
 		return
 	}

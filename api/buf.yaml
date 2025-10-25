@@ -1,0 +1,49 @@
+version: v1
+name: buf.build/test-order-pipeline/order-processing-pipeline
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    DIRECTORY_SAME_PACKAGE:
+      - common.proto
+      - merchant.proto
+      - order_service.proto
+      - payment_service.proto
+      - shipping_service.proto
+    PACKAGE_DIRECTORY_MATCH:
+      - common.proto
+      - merchant.proto
+      - order_service.proto
+      - payment_service.proto
+      - shipping_service.proto
+    PACKAGE_SAME_DIRECTORY:
+      - common.proto
+      - merchant.proto
+      - order_service.proto
+      - payment_service.proto
+      - shipping_service.proto
+    PACKAGE_VERSION_SUFFIX:
+      - common.proto
+      - merchant.proto
+      - order_service.proto
+      - payment_service.proto
+      - shipping_service.proto
+    ENUM_VALUE_PREFIX:
+      - common.proto
+    ENUM_ZERO_VALUE_SUFFIX:
+      - common.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - merchant.proto
+      - order_service.proto
+    RPC_REQUEST_RESPONSE_UNIQUE:
+      - order_service.proto
+breaking:
+  use:
+    - FILE
+  ignore_only:
+    FILE_SAME_GO_PACKAGE:
+      - common.proto
+      - merchant.proto
+      - order_service.proto
+      - payment_service.proto
+      - shipping_service.proto
