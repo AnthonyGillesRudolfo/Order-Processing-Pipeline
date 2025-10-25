@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
+	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
 	restate "github.com/restatedev/sdk-go"
 
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"

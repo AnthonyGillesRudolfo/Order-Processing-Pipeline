@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package order.sv1;
 
-option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1;orderpb";
+option go_package = "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1;orderpb";
 
 // Shared enums and types across services
 

@@ -5,7 +5,7 @@ import (
 	"log"
 	"strconv"
 
-	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
+	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
 	postgres "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 	restate "github.com/restatedev/sdk-go"
 )

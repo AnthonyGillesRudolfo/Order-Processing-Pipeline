@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
+	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
 	postgresdb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 	"github.com/cucumber/godog"
 	restate "github.com/restatedev/sdk-go"
