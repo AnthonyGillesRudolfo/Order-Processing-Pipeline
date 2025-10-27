@@ -1,0 +1,281 @@
+{
+  "name": "order-processing-pipeline",
+  "description": "MCP server for order processing pipeline with merchant management, cart operations, checkout, and order tracking",
+  "tools": [
+    {
+      "name": "list_tools",
+      "description": "Show a list of all available MCP tools with their descriptions",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Formatted list of all available tools with descriptions and parameters"
+      }
+    },
+    {
+      "name": "list_merchants",
+      "description": "Show a list of all merchants in the system",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Formatted list of merchants with their IDs, names, and item counts"
+      }
+    },
+    {
+      "name": "list_merchant_items",
+      "description": "Show a list of items that a specific merchant sells",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "merchant_id": {
+            "type": "string",
+            "description": "The ID of the merchant to get items for"
+          }
+        },
+        "required": ["merchant_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Formatted list of items with names, prices, and stock quantities"
+      }
+    },
+    {
+      "name": "add_to_cart",
+      "description": "Add items to a customer's shopping cart",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          },
+          "merchant_id": {
+            "type": "string",
+            "description": "The ID of the merchant"
+          },
+          "items": {
+            "type": "array",
+            "description": "List of items with product_id and quantity",
+            "items": {
+              "type": "object",
+              "properties": {
+                "product_id": {
+                  "type": "string",
+                  "description": "Product ID or name"
+                },
+                "quantity": {
+                  "type": "integer",
+                  "description": "Quantity to add"
+                }
+              },
+              "required": ["product_id", "quantity"]
+            }
+          }
+        },
+        "required": ["customer_id", "merchant_id", "items"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Success message with updated cart information"
+      }
+    },
+    {
+      "name": "view_cart",
+      "description": "View the current contents of a customer's shopping cart",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Formatted cart contents with items, quantities, prices, and total amount"
+      }
+    },
+    {
+      "name": "update_cart_item",
+      "description": "Update the quantity of an item in the cart",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          },
+          "product_id": {
+            "type": "string",
+            "description": "The ID of the product to update (can be product name or ID)"
+          },
+          "quantity": {
+            "type": "integer",
+            "description": "New quantity for the item"
+          }
+        },
+        "required": ["customer_id", "product_id", "quantity"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Success message with updated cart information"
+      }
+    },
+    {
+      "name": "remove_from_cart",
+      "description": "Remove items from the cart",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          },
+          "product_ids": {
+            "type": "array",
+            "description": "List of product IDs to remove",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["customer_id", "product_ids"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Success message with updated cart information"
+      }
+    },
+    {
+      "name": "checkout",
+      "description": "Initiate checkout process (triggers AP2 flow, verifies user intent)",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Checkout result with order ID, payment ID, execution ID, status, and invoice URL"
+      }
+    },
+    {
+      "name": "checkout_cart",
+      "description": "Checkout and create a Xendit invoice for the current cart using AP2 integration",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Checkout result with order ID, payment ID, execution ID, status, and invoice link"
+      }
+    },
+    {
+      "name": "get_shipping_preferences",
+      "description": "Retrieve shipping address and delivery preferences for a customer",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Customer's shipping preferences including address and delivery method"
+      }
+    },
+    {
+      "name": "set_shipping_preferences",
+      "description": "Update shipping information for a customer",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string",
+            "description": "The ID of the customer"
+          },
+          "address_line1": {
+            "type": "string",
+            "description": "First line of address"
+          },
+          "address_line2": {
+            "type": "string",
+            "description": "Second line of address (optional)"
+          },
+          "city": {
+            "type": "string",
+            "description": "City name"
+          },
+          "state": {
+            "type": "string",
+            "description": "State or province"
+          },
+          "postal_code": {
+            "type": "string",
+            "description": "Postal or ZIP code"
+          },
+          "country": {
+            "type": "string",
+            "description": "Country name"
+          },
+          "delivery_method": {
+            "type": "string",
+            "description": "Delivery method preference"
+          }
+        },
+        "required": ["customer_id"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Confirmation message with updated shipping preferences"
+      }
+    },
+    {
+      "name": "list_orders",
+      "description": "List all orders with comprehensive details (items, prices, order status, payment status, shipping status)",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Formatted list of all orders with detailed information including items, statuses, and amounts"
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "merchant://{merchant_id}/items",
+      "name": "Merchant Catalog",
+      "description": "Get the item catalog for a specific merchant as a resource",
+      "mimeType": "application/json"
+    }
+  ]
+}
+  
