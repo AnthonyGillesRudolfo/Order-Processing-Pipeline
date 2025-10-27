@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/merchant/v1"
-	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/order/v1"
+	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
+	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
 	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	postgresdb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 	"github.com/cucumber/godog"
