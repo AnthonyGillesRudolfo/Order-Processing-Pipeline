@@ -1,11 +1,11 @@
 package bdd
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"fmt"
-	"io/fs"
+    "context"
+    "database/sql"
+    "errors"
+    "fmt"
+    "io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,8 +16,9 @@ import (
 	"sync"
 	"testing"
 
-	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
-	postgresdb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
+    orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
+    internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
+    postgresdb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
 	"github.com/cucumber/godog"
 	restate "github.com/restatedev/sdk-go"
 	"runtime"
@@ -49,12 +50,16 @@ type PipelineWorld struct {
     ap2Base        string
     ap2RuntimeBase string
     // Captured ids
+    ap2MandateID       string
     ap2IntentID        string
     ap2AuthorizationID string
     ap2ExecutionID     string
     ap2OrderID         string
     ap2PaymentID       string
     ap2InvoiceLink     string
+
+    // In-memory cart state for the AP2 stub runtime, keyed by customer ID
+    ap2RuntimeCarts map[string]ap2CartState
 }
 
 func NewPipelineWorld(t *testing.T) *PipelineWorld {
@@ -62,9 +67,10 @@ func NewPipelineWorld(t *testing.T) *PipelineWorld {
 	return &PipelineWorld{
 		t:             t,
 		runCtx:        stubRunContext{Context: context.Background()},
-		projectRoot:   root,
-		merchantItems: make(map[string]merchantItem),
-	}
+        projectRoot:   root,
+        merchantItems: make(map[string]merchantItem),
+        ap2RuntimeCarts: make(map[string]ap2CartState),
+    }
 }
 
 func (w *PipelineWorld) Register(sc *godog.ScenarioContext) {
@@ -99,12 +105,14 @@ func (w *PipelineWorld) resetScenarioState() {
     // AP2
     w.ap2Base = ""
     w.ap2RuntimeBase = ""
+    w.ap2MandateID = ""
     w.ap2IntentID = ""
     w.ap2AuthorizationID = ""
     w.ap2ExecutionID = ""
     w.ap2OrderID = ""
     w.ap2PaymentID = ""
     w.ap2InvoiceLink = ""
+    w.ap2RuntimeCarts = make(map[string]ap2CartState)
 }
 
 func (w *PipelineWorld) debugf(format string, args ...any) {
@@ -144,10 +152,12 @@ func (w *PipelineWorld) ensureDatabase() {
         // Only run migrations if the core schema is not present yet
         if !schemaPresent(postgresdb.DB) {
             dbSetupErr = runMigrations(postgresdb.DB, filepath.Join(w.projectRoot, "db", "migrations"))
-		} else {
-			dbSetupErr = nil
-		}
-	})
+        } else {
+            dbSetupErr = nil
+        }
+        // Wire repository for DI-aware code paths used by workflows
+        internalorder.SetRepository(postgresdb.NewRepository(postgresdb.DB))
+    })
 
 	if dbSetupErr != nil {
 		w.t.Helper()
@@ -284,9 +294,16 @@ func locateProjectRoot() string {
 }
 
 type merchantItem struct {
-	Name     string
-	Quantity int32
-	Price    float64
+    Name     string
+    Quantity int32
+    Price    float64
+}
+
+// ap2CartState models the JSON structure used by the cart service responses in tests
+type ap2CartState struct {
+    MerchantID  string                   `json:"merchant_id"`
+    Items       []map[string]any         `json:"items"`
+    TotalAmount float64                  `json:"total_amount"`
 }
 
 func (w *PipelineWorld) runAndCapture(fn func(restate.RunContext) (any, error), output any) error {

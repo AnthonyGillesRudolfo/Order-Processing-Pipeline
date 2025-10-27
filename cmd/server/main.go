@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,13 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
 	internalap2 "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/ap2"
 	internalcart "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/cart"
+	appconfig "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/config"
 	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.uber.org/fx"
 )
 
 // AP2 response types (copied from internal/ap2/handlers.go)
@@ -49,383 +51,186 @@ type AP2Envelope[T any] struct {
 	Result T `json:"result"`
 }
 
-// startOrdersConsumer subscribes to orders.v1 and processes events
-func startOrdersConsumer() {
-	brokers := getenv("KAFKA_BROKERS", "localhost:9092")
+func newLogger(cfg appconfig.Config) *log.Logger {
+	prefix := ""
+	if cfg.ServiceName != "" {
+		prefix = fmt.Sprintf("[%s] ", cfg.ServiceName)
+	}
+	logger := log.New(os.Stdout, prefix, log.LstdFlags|log.Lmicroseconds)
+	log.SetOutput(os.Stdout)
+	log.SetFlags(logger.Flags())
+	log.SetPrefix(prefix)
+	return logger
+}
 
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  []string{brokers},
-		Topic:    "orders.v1",
-		GroupID:  "order-workers", // consumer group (offsets tracked)
+func setupTelemetry(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger) {
+	var cleanup func()
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			cleanup = telemetry.InitTracer(cfg.ServiceName)
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			if cleanup != nil {
+				cleanup()
+			}
+			return nil
+		},
+	})
+}
+
+// newSQLDB provides a shared *sql.DB via Fx and also sets the postgres.DB global
+// for backward compatibility with existing call sites. It closes the DB on stop.
+func newSQLDB(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger) (*sql.DB, error) {
+    logger.Printf("Connecting to PostgreSQL database %s@%s:%d", cfg.Database.Database, cfg.Database.Host, cfg.Database.Port)
+    db, err := postgres.OpenDatabase(cfg.Database)
+    if err != nil {
+        logger.Printf("WARNING: failed to connect to database: %v", err)
+        // Keep app running without DB; callers check postgres.DB nil
+        return nil, nil
+    }
+    logger.Printf("Database connection established successfully")
+    lc.Append(fx.Hook{
+        OnStop: func(context.Context) error {
+            return postgres.CloseDatabase()
+        },
+    })
+    return db, nil
+}
+
+func registerWebServer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner, prod *events.Producer, db *sql.DB) {
+	httpServer := newWebServer(cfg.HTTP.Addr, prod, db)
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			go func() {
+				logger.Printf("Web UI available on %s (serving ./web)", cfg.HTTP.Addr)
+				if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logger.Printf("Web UI/API server error: %v", err)
+					_ = shutdowner.Shutdown()
+				}
+			}()
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if err := httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
+			return nil
+		},
+	})
+}
+
+func registerOrderConsumer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner) {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  cfg.Kafka.Brokers,
+		Topic:    cfg.Kafka.OrdersTopic,
+		GroupID:  cfg.Kafka.OrdersGroup,
 		MinBytes: 1e3, MaxBytes: 10e6,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
-	log.Println("[orders.v1] consumer started (group=order-workers)")
-	for {
-		msg, err := r.ReadMessage(context.Background())
-		if err != nil {
-			log.Printf("[orders.v1] read error: %v", err)
-			_ = r.Close()
-			return
-		}
-
-		var evt events.Envelope
-		if err := json.Unmarshal(msg.Value, &evt); err != nil {
-			log.Printf("[orders.v1] bad JSON: %v; payload=%s", err, string(msg.Value))
-			continue
-		}
-
-		// Route by event type
-		switch evt.EventType {
-		case "OrderCreated":
-			handleOrderCreated(evt)
-		default:
-			log.Printf("[orders.v1] ignored eventType=%s key=%s", evt.EventType, string(msg.Key))
-		}
-	}
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			go func() {
+				defer close(done)
+				if err := runOrdersConsumer(ctx, reader, cfg.Kafka.OrdersTopic, cfg.Kafka.OrdersGroup, logger); err != nil {
+					logger.Printf("orders consumer stopped with error: %v", err)
+					_ = shutdowner.Shutdown()
+				}
+			}()
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			cancel()
+			_ = reader.Close()
+			<-done
+			return nil
+		},
+	})
 }
 
-func startPaymentsConsumer() {
-	brokers := getenv("KAFKA_BROKERS", "localhost:9092")
-
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  []string{brokers},
-		Topic:    "payments.v1",
-		GroupID:  "payment-workers", // consumer group (offsets tracked)
+func registerPaymentsConsumer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner, db *sql.DB) {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  cfg.Kafka.Brokers,
+		Topic:    cfg.Kafka.PaymentsTopic,
+		GroupID:  cfg.Kafka.PaymentsGroup,
 		MinBytes: 1e3, MaxBytes: 10e6,
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
-	log.Println("[payments.v1] consumer started (group=payment-workers)")
-	ctx := context.Background()
-	for {
-		msg, err := r.FetchMessage(ctx)
-		if err != nil {
-			log.Printf("[payments.v1] read error: %v", err)
-			_ = r.Close()
-			return
-		}
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			go func() {
+				defer close(done)
+				if err := runPaymentsConsumer(ctx, reader, cfg.Kafka.PaymentsTopic, cfg.Kafka.PaymentsGroup, cfg.Restate.RuntimeURL, logger, db); err != nil {
+					logger.Printf("payments consumer stopped with error: %v", err)
+					_ = shutdowner.Shutdown()
+				}
+			}()
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			cancel()
+			_ = reader.Close()
+			<-done
+			return nil
+		},
+	})
+}
 
-		var evt events.Envelope
-		if err := json.Unmarshal(msg.Value, &evt); err != nil {
-			log.Printf("[payments.v1] bad JSON: %v; payload=%s", err, string(msg.Value))
-			if commitErr := r.CommitMessages(ctx, msg); commitErr != nil {
-				log.Printf("[payments.v1] commit error after bad JSON: %v", commitErr)
+func registerRestateServer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner, srv *server.Restate) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			logger.Println("Restate server listening on", cfg.Restate.ListenAddr)
+			logger.Println("")
+			logger.Println("Service Architecture:")
+			logger.Println("  - OrderService: WORKFLOW (keyed by order ID)")
+			logger.Println("  - PaymentService: VIRTUAL OBJECT (keyed by payment ID)")
+			logger.Println("  - ShippingService: VIRTUAL OBJECT (keyed by shipment ID)")
+			logger.Println("  - MerchantService: VIRTUAL OBJECT (keyed by merchant ID)")
+			logger.Println("  - CartService: VIRTUAL OBJECT (keyed by customer ID)")
+			logger.Println("  - AP2 Endpoints: HTTP API (/ap2/mandates, /ap2/intents, /ap2/authorize, /ap2/execute, /ap2/refunds)")
+			logger.Println("")
+			logger.Println("Register with Restate:")
+			displayRestateAddr := cfg.Restate.ListenAddr
+			if strings.HasPrefix(displayRestateAddr, ":") {
+				displayRestateAddr = "localhost" + displayRestateAddr
 			}
-			continue
-		}
-
-		success := true
-
-		// Route by event type
-		switch evt.EventType {
-		case "PaymentCompleted":
-			if err := handlePaymentCompletedEvent(evt); err != nil {
-				log.Printf("[payments.v1] PaymentCompleted error: %v", err)
-				success = false
+			logger.Printf("  restate deployments register http://%s", displayRestateAddr)
+			logger.Println("")
+			logger.Println("Open the test UI:")
+			displayHTTPAddr := cfg.HTTP.Addr
+			if strings.HasPrefix(displayHTTPAddr, ":") {
+				displayHTTPAddr = "localhost" + displayHTTPAddr
 			}
-		case "PaymentExpired":
-			if err := handlePaymentExpiredEvent(evt); err != nil {
-				log.Printf("[payments.v1] PaymentExpired error: %v", err)
-				success = false
-			}
-		case "OrderCreated":
-			handleOrderCreated(evt)
-		default:
-			log.Printf("[payments.v1] ignored eventType=%s key=%s", evt.EventType, string(msg.Key))
-		}
+			logger.Printf("  http://%s", displayHTTPAddr)
+			logger.Println("")
 
-		if success {
-			if err := r.CommitMessages(ctx, msg); err != nil {
-				log.Printf("[payments.v1] commit error: %v", err)
-			}
-		} else {
-			// Leave message uncommitted so it can be retried
-			time.Sleep(time.Second)
-		}
-	}
+			go func() {
+				defer close(done)
+				if err := srv.Start(ctx, cfg.Restate.ListenAddr); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Printf("Server error: %v", err)
+					_ = shutdowner.Shutdown()
+				}
+			}()
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			cancel()
+			<-done
+			return nil
+		},
+	})
 }
 
-// Your first handler: make it idempotent when you add side effects
-func handleOrderCreated(evt events.Envelope) {
-	// Example: just log for now (prove consumption works)
-	data := toMap(evt.Data)
-	log.Printf("[OrderCreated] orderId=%s total=%.2f invoice=%s",
-		evt.AggregateID,
-		toFloat(data["totalAmount"]),
-		toString(data["invoiceUrl"]),
-	)
-}
-
-// small helpers for robust logging
-func toString(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
-func toMap(v interface{}) map[string]interface{} {
-	if m, ok := v.(map[string]interface{}); ok {
-		return m
-	}
-	return map[string]interface{}{}
-}
-
-func toFloat(v interface{}) float64 {
-	switch t := v.(type) {
-	case float64:
-		return t
-	case float32:
-		return float64(t)
-	case int:
-		return float64(t)
-	default:
-		return 0
-	}
-}
-
-func handlePaymentCompletedEvent(evt events.Envelope) error {
-	data := toMap(evt.Data)
-	paymentID := toString(data["paymentId"])
-	if paymentID == "" {
-		log.Printf("[payments.v1] PaymentCompleted event missing paymentId: %+v", data)
-		return nil
-	}
-
-	orderID := toString(data["orderId"])
-	if orderID == "" {
-		info, err := getOrderFromDBByPaymentID(paymentID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				log.Printf("[payments.v1] PaymentCompleted order not found for payment %s; skipping", paymentID)
-				return nil
-			}
-			return fmt.Errorf("lookup order for payment %s: %w", paymentID, err)
-		}
-		if ord, ok := info["order"].(map[string]any); ok {
-			orderID = toString(ord["id"])
-		}
-	}
-
-	if orderID == "" {
-		log.Printf("[payments.v1] PaymentCompleted event missing orderId for payment %s; skipping", paymentID)
-		return nil
-	}
-
-	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
-	payURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentCompleted", runtimeURL, paymentID)
-
-	payReq := map[string]any{
-		"payment_id": paymentID,
-		"order_id":   orderID,
-	}
-
-	if err := postJSON(payURL, payReq); err != nil {
-		return fmt.Errorf("mark payment completed: %w", err)
-	}
-
-	if err := resolvePaymentAwakeable(orderID, runtimeURL); err != nil {
-		return fmt.Errorf("resolve awakeable: %w", err)
-	}
-
-	log.Printf("[payments.v1] processed PaymentCompleted for order %s (payment %s)", orderID, paymentID)
-	return nil
-}
-
-func handlePaymentExpiredEvent(evt events.Envelope) error {
-	data := toMap(evt.Data)
-	paymentID := toString(data["paymentId"])
-	if paymentID == "" {
-		log.Printf("[payments.v1] PaymentExpired event missing paymentId: %+v", data)
-		return nil
-	}
-
-	orderID := toString(data["orderId"])
-	if orderID == "" {
-		info, err := getOrderFromDBByPaymentID(paymentID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				log.Printf("[payments.v1] PaymentExpired order not found for payment %s; skipping", paymentID)
-				return nil
-			}
-			return fmt.Errorf("lookup order for payment %s: %w", paymentID, err)
-		}
-		if ord, ok := info["order"].(map[string]any); ok {
-			orderID = toString(ord["id"])
-		}
-	}
-
-	if orderID == "" {
-		log.Printf("[payments.v1] PaymentExpired event missing orderId for payment %s; skipping", paymentID)
-		return nil
-	}
-
-	runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
-	expiredURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentExpired", runtimeURL, paymentID)
-
-	expiredReq := map[string]any{
-		"payment_id": paymentID,
-		"order_id":   orderID,
-	}
-
-	if err := postJSON(expiredURL, expiredReq); err != nil {
-		return fmt.Errorf("mark payment expired: %w", err)
-	}
-
-	log.Printf("[payments.v1] processed PaymentExpired for order %s (payment %s)", orderID, paymentID)
-	return nil
-}
-
-func resolvePaymentAwakeable(orderID, runtimeURL string) error {
-	if postgres.DB == nil {
-		log.Printf("[payments.v1] database unavailable, skipping awakeable resolve for order %s", orderID)
-		return nil
-	}
-
-	row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
-	var awakeableID sql.NullString
-	if err := row.Scan(&awakeableID); err != nil {
-		if err == sql.ErrNoRows {
-			log.Printf("[payments.v1] no awakeable found for order %s", orderID)
-			return updateOrderStatusProcessing(orderID)
-		}
-		return fmt.Errorf("query awakeable id for order %s: %w", orderID, err)
-	}
-
-	if !awakeableID.Valid || awakeableID.String == "" {
-		log.Printf("[payments.v1] awakeable id empty for order %s", orderID)
-		return updateOrderStatusProcessing(orderID)
-	}
-
-	awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID.String)
-	awakeableBody := []byte(`"payment_completed"`)
-
-	resp, err := http.Post(awakeableURL, "application/json", bytes.NewReader(awakeableBody))
-	if err != nil {
-		return fmt.Errorf("resolve awakeable for order %s: %w", orderID, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("resolve awakeable for order %s: status %d", orderID, resp.StatusCode)
-	}
-
-	log.Printf("[payments.v1] resolved awakeable %s for order %s", awakeableID.String, orderID)
-	return updateOrderStatusProcessing(orderID)
-}
-
-func updateOrderStatusProcessing(orderID string) error {
-	if err := postgres.UpdateOrderStatusDB(orderID, orderpb.OrderStatus_PROCESSING); err != nil {
-		return fmt.Errorf("update order status for order %s: %w", orderID, err)
-	}
-	log.Printf("[payments.v1] updated order %s status to PROCESSING", orderID)
-	return nil
-}
-
-func emitPaymentEvent(ctx context.Context, status, orderID, paymentID, customerID, invoiceURL string, totalAmount float64, invoiceID string) (string, error) {
-	normalizedStatus := strings.ToUpper(status)
-
-	var eventType string
-	switch normalizedStatus {
-	case "PAID":
-		eventType = "PaymentCompleted"
-	case "EXPIRED":
-		eventType = "PaymentExpired"
-	default:
-		return "", nil
-	}
-
-	key := orderID
-	if key == "" {
-		key = paymentID
-	}
-
-	prod := events.NewProducer()
-	defer prod.Close()
-
-	data := map[string]any{
-		"orderId":     orderID,
-		"paymentId":   paymentID,
-		"customerId":  customerID,
-		"invoiceURL":  invoiceURL,
-		"totalAmount": totalAmount,
-		"provider":    "xendit",
-		"status":      normalizedStatus,
-	}
-
-	if invoiceID != "" {
-		data["invoiceId"] = invoiceID
-	}
-
-	evt := events.Envelope{
-		EventType:    eventType,
-		EventVersion: "v1",
-		AggregateID:  key,
-		Data:         data,
-	}
-
-	if err := prod.Publish(ctx, "payments.v1", key, evt); err != nil {
-		return "", err
-	}
-
-	return eventType, nil
-}
-
-func main() {
-	log.Println("Starting Order Processing Pipeline (modular server)...")
-
-	// Initialize OpenTelemetry
-	cleanup := telemetry.InitTracer("order-processing-pipeline")
-	defer cleanup()
-
-	// Load .env if present
-	_ = godotenv.Load()
-
-	// Load DB config from environment variables with sensible defaults
-	// ORDER_DB_HOST, ORDER_DB_PORT, ORDER_DB_NAME, ORDER_DB_USER, ORDER_DB_PASSWORD
-	dbHost := getenv("ORDER_DB_HOST", "localhost")
-	dbPortStr := getenv("ORDER_DB_PORT", "5432")
-	dbPort, err := strconv.Atoi(dbPortStr)
-	if err != nil {
-		log.Printf("Invalid ORDER_DB_PORT '%s', defaulting to 5432", dbPortStr)
-		dbPort = 5432
-	}
-	dbName := getenv("ORDER_DB_NAME", "orderpipeline")
-	dbUser := getenv("ORDER_DB_USER", "orderpipelineadmin")
-	dbPassword := getenv("ORDER_DB_PASSWORD", "")
-
-	dbConfig := postgres.DatabaseConfig{
-		Host:     dbHost,
-		Port:     dbPort,
-		Database: dbName,
-		User:     dbUser,
-		Password: dbPassword,
-	}
-
-	log.Println("Connecting to PostgreSQL database...")
-	if err := postgres.InitDatabase(dbConfig); err != nil {
-		log.Printf("WARNING: Failed to connect to database: %v", err)
-		log.Println("Continuing without database persistence...")
-	} else {
-		log.Println("Database connection established successfully")
-		defer func() {
-			if err := postgres.CloseDatabase(); err != nil {
-				log.Printf("Error closing database: %v", err)
-			}
-		}()
-	}
-
-	// Start simple web UI + API on :3000
-	go func() {
-		if err := startWebUIAndAPI(); err != nil {
-			log.Printf("Web UI/API server error: %v", err)
-		}
-	}()
-
-	go startOrdersConsumer()
-	go startPaymentsConsumer()
-
-	// Create Restate server
+func buildRestateServer() *server.Restate {
 	srv := server.NewRestate()
 
 	// Bind OrderService as a Workflow
@@ -482,28 +287,367 @@ func main() {
 		Handler("GetCart", restate.NewObjectSharedHandler(internalcart.GetCart))
 	srv = srv.Bind(cartVirtualObject)
 
-	// Start the server on port 9081
-	log.Println("Restate server listening on :9081")
-	log.Println("")
-	log.Println("Service Architecture:")
-	log.Println("  - OrderService: WORKFLOW (keyed by order ID)")
-	log.Println("  - PaymentService: VIRTUAL OBJECT (keyed by payment ID)")
-	log.Println("  - ShippingService: VIRTUAL OBJECT (keyed by shipment ID)")
-	log.Println("  - MerchantService: VIRTUAL OBJECT (keyed by merchant ID)")
-	log.Println("  - CartService: VIRTUAL OBJECT (keyed by customer ID)")
-	log.Println("  - AP2 Endpoints: HTTP API (/ap2/mandates, /ap2/intents, /ap2/authorize, /ap2/execute, /ap2/refunds)")
-	log.Println("")
-	log.Println("Register with Restate:")
-	log.Println("  restate deployments register http://localhost:9081")
-	log.Println("")
-	log.Println("Open the test UI:")
-	log.Println("  http://localhost:3000")
-	log.Println("")
+	return srv
+}
 
-	if err := srv.Start(context.Background(), ":9081"); err != nil {
-		log.Printf("Server error: %v", err)
-		os.Exit(1)
+func runOrdersConsumer(ctx context.Context, reader *kafka.Reader, topic, group string, logger *log.Logger) error {
+	logger.Printf("[%s] consumer started (group=%s)", topic, group)
+	for {
+		msg, err := reader.ReadMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return fmt.Errorf("[%s] read error: %w", topic, err)
+		}
+
+		var evt events.Envelope
+		if err := json.Unmarshal(msg.Value, &evt); err != nil {
+			logger.Printf("[%s] bad JSON: %v; payload=%s", topic, err, string(msg.Value))
+			continue
+		}
+
+		switch evt.EventType {
+		case "OrderCreated":
+			handleOrderCreated(evt)
+		default:
+			logger.Printf("[%s] ignored eventType=%s key=%s", topic, evt.EventType, string(msg.Key))
+		}
 	}
+}
+
+func runPaymentsConsumer(ctx context.Context, reader *kafka.Reader, topic, group, runtimeURL string, logger *log.Logger, db *sql.DB) error {
+	logger.Printf("[%s] consumer started (group=%s)", topic, group)
+	for {
+		msg, err := reader.FetchMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return fmt.Errorf("[%s] read error: %w", topic, err)
+		}
+
+		var evt events.Envelope
+		if err := json.Unmarshal(msg.Value, &evt); err != nil {
+			logger.Printf("[%s] bad JSON: %v; payload=%s", topic, err, string(msg.Value))
+			if commitErr := reader.CommitMessages(ctx, msg); commitErr != nil {
+				logger.Printf("[%s] commit error after bad JSON: %v", topic, commitErr)
+			}
+			continue
+		}
+
+		success := true
+
+		switch evt.EventType {
+		case "PaymentCompleted":
+			if err := handlePaymentCompletedEventWithRuntime(evt, runtimeURL, db); err != nil {
+				logger.Printf("[%s] PaymentCompleted error: %v", topic, err)
+				success = false
+			}
+		case "PaymentExpired":
+			if err := handlePaymentExpiredEventWithRuntime(evt, runtimeURL, db); err != nil {
+				logger.Printf("[%s] PaymentExpired error: %v", topic, err)
+				success = false
+			}
+		case "OrderCreated":
+			handleOrderCreated(evt)
+		default:
+			logger.Printf("[%s] ignored eventType=%s key=%s", topic, evt.EventType, string(msg.Key))
+		}
+
+		if success {
+			if err := reader.CommitMessages(ctx, msg); err != nil {
+				logger.Printf("[%s] commit error: %v", topic, err)
+			}
+		} else {
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+// Your first handler: make it idempotent when you add side effects
+func handleOrderCreated(evt events.Envelope) {
+	// Example: just log for now (prove consumption works)
+	data := toMap(evt.Data)
+	log.Printf("[OrderCreated] orderId=%s total=%.2f invoice=%s",
+		evt.AggregateID,
+		toFloat(data["totalAmount"]),
+		toString(data["invoiceUrl"]),
+	)
+}
+
+// small helpers for robust logging
+func toString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func toMap(v interface{}) map[string]interface{} {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return map[string]interface{}{}
+}
+
+func toFloat(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	default:
+		return 0
+	}
+}
+
+func handlePaymentCompletedEventWithRuntime(evt events.Envelope, runtimeURL string, db *sql.DB) error {
+    data := toMap(evt.Data)
+    paymentID := toString(data["paymentId"])
+	if paymentID == "" {
+		log.Printf("[payments.v1] PaymentCompleted event missing paymentId: %+v", data)
+		return nil
+	}
+
+	orderID := toString(data["orderId"])
+	if orderID == "" {
+		info, err := getOrderFromDBByPaymentID(db, paymentID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Printf("[payments.v1] PaymentCompleted order not found for payment %s; skipping", paymentID)
+				return nil
+			}
+			return fmt.Errorf("lookup order for payment %s: %w", paymentID, err)
+		}
+		if ord, ok := info["order"].(map[string]any); ok {
+			orderID = toString(ord["id"])
+		}
+	}
+
+	if orderID == "" {
+		log.Printf("[payments.v1] PaymentCompleted event missing orderId for payment %s; skipping", paymentID)
+		return nil
+	}
+
+	payURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentCompleted", runtimeURL, paymentID)
+
+	payReq := map[string]any{
+		"payment_id": paymentID,
+		"order_id":   orderID,
+	}
+
+	if err := postJSON(payURL, payReq); err != nil {
+		return fmt.Errorf("mark payment completed: %w", err)
+	}
+
+    if err := resolvePaymentAwakeable(db, orderID, runtimeURL); err != nil {
+        return fmt.Errorf("resolve awakeable: %w", err)
+    }
+
+    // Best-effort: clear the customer's cart after payment completion as a fallback
+    // Try to get customer_id from DB and call ClearCart; ignore failures.
+    if db != nil {
+        if info, err := getOrderFromDB(db, orderID); err == nil {
+            if ord, ok := info["order"].(map[string]any); ok {
+                if cid, ok := ord["customer_id"].(string); ok && cid != "" {
+                    clearURL := fmt.Sprintf("%s/cart.sv1.CartService/%s/ClearCart", runtimeURL, cid)
+                    clearReq := map[string]any{"customer_id": cid}
+                    if b, err := json.Marshal(clearReq); err == nil {
+                        if resp2, err := http.Post(clearURL, "application/json", bytes.NewReader(b)); err == nil {
+                            defer resp2.Body.Close()
+                            if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
+                                log.Printf("[payments.v1] warning: ClearCart returned status %d for %s", resp2.StatusCode, cid)
+                            }
+                        } else {
+                            log.Printf("[payments.v1] warning: failed to ClearCart for %s: %v", cid, err)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    log.Printf("[payments.v1] processed PaymentCompleted for order %s (payment %s)", orderID, paymentID)
+    return nil
+}
+
+func handlePaymentExpiredEventWithRuntime(evt events.Envelope, runtimeURL string, db *sql.DB) error {
+	data := toMap(evt.Data)
+	paymentID := toString(data["paymentId"])
+	if paymentID == "" {
+		log.Printf("[payments.v1] PaymentExpired event missing paymentId: %+v", data)
+		return nil
+	}
+
+	orderID := toString(data["orderId"])
+	if orderID == "" {
+		info, err := getOrderFromDBByPaymentID(db, paymentID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Printf("[payments.v1] PaymentExpired order not found for payment %s; skipping", paymentID)
+				return nil
+			}
+			return fmt.Errorf("lookup order for payment %s: %w", paymentID, err)
+		}
+		if ord, ok := info["order"].(map[string]any); ok {
+			orderID = toString(ord["id"])
+		}
+	}
+
+	if orderID == "" {
+		log.Printf("[payments.v1] PaymentExpired event missing orderId for payment %s; skipping", paymentID)
+		return nil
+	}
+
+	expiredURL := fmt.Sprintf("%s/order.sv1.PaymentService/%s/MarkPaymentExpired", runtimeURL, paymentID)
+
+	expiredReq := map[string]any{
+		"payment_id": paymentID,
+		"order_id":   orderID,
+	}
+
+	if err := postJSON(expiredURL, expiredReq); err != nil {
+		return fmt.Errorf("mark payment expired: %w", err)
+	}
+
+	log.Printf("[payments.v1] processed PaymentExpired for order %s (payment %s)", orderID, paymentID)
+	return nil
+}
+
+func resolvePaymentAwakeable(db *sql.DB, orderID, runtimeURL string) error {
+	if db == nil {
+		log.Printf("[payments.v1] database unavailable, skipping awakeable resolve for order %s", orderID)
+		return nil
+	}
+
+	row := db.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
+	var awakeableID sql.NullString
+	if err := row.Scan(&awakeableID); err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("[payments.v1] no awakeable found for order %s", orderID)
+			return updateOrderStatusProcessing(orderID)
+		}
+		return fmt.Errorf("query awakeable id for order %s: %w", orderID, err)
+	}
+
+	if !awakeableID.Valid || awakeableID.String == "" {
+		log.Printf("[payments.v1] awakeable id empty for order %s", orderID)
+		return updateOrderStatusProcessing(orderID)
+	}
+
+	awakeableURL := fmt.Sprintf("%s/restate/awakeables/%s/resolve", runtimeURL, awakeableID.String)
+	awakeableBody := []byte(`"payment_completed"`)
+
+	resp, err := http.Post(awakeableURL, "application/json", bytes.NewReader(awakeableBody))
+	if err != nil {
+		return fmt.Errorf("resolve awakeable for order %s: %w", orderID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("resolve awakeable for order %s: status %d", orderID, resp.StatusCode)
+	}
+
+	log.Printf("[payments.v1] resolved awakeable %s for order %s", awakeableID.String, orderID)
+	return updateOrderStatusProcessing(orderID)
+}
+
+func updateOrderStatusProcessing(orderID string) error {
+	if err := postgres.UpdateOrderStatusDB(orderID, orderpb.OrderStatus_PROCESSING); err != nil {
+		return fmt.Errorf("update order status for order %s: %w", orderID, err)
+	}
+	log.Printf("[payments.v1] updated order %s status to PROCESSING", orderID)
+	return nil
+}
+
+func emitPaymentEvent(ctx context.Context, prod *events.Producer, status, orderID, paymentID, customerID, invoiceURL string, totalAmount float64, invoiceID string) (string, error) {
+	normalizedStatus := strings.ToUpper(status)
+
+	var eventType string
+	switch normalizedStatus {
+	case "PAID":
+		eventType = "PaymentCompleted"
+	case "EXPIRED":
+		eventType = "PaymentExpired"
+	default:
+		return "", nil
+	}
+
+	key := orderID
+	if key == "" {
+		key = paymentID
+	}
+
+    // Producer is injected via DI and managed by lifecycle.
+
+	data := map[string]any{
+		"orderId":     orderID,
+		"paymentId":   paymentID,
+		"customerId":  customerID,
+		"invoiceURL":  invoiceURL,
+		"totalAmount": totalAmount,
+		"provider":    "xendit",
+		"status":      normalizedStatus,
+	}
+
+	if invoiceID != "" {
+		data["invoiceId"] = invoiceID
+	}
+
+	evt := events.Envelope{
+		EventType:    eventType,
+		EventVersion: "v1",
+		AggregateID:  key,
+		Data:         data,
+	}
+
+	if err := prod.Publish(ctx, "payments.v1", key, evt); err != nil {
+		return "", err
+	}
+
+	return eventType, nil
+}
+
+func main() {
+    _ = godotenv.Load()
+
+    app := fx.New(
+        fx.Provide(
+            appconfig.Load,
+            newLogger,
+            buildRestateServer,
+            newKafkaProducer,
+            newSQLDB,
+            func(db *sql.DB) *postgres.Repository { return postgres.NewRepository(db) },
+        ),
+        fx.Invoke(
+            func(logger *log.Logger, cfg appconfig.Config) {
+                logger.Printf("Starting %s...", cfg.ServiceName)
+            },
+            func(r *postgres.Repository) { internalorder.SetRepository(r) },
+            setupTelemetry,
+            registerWebServer,
+            registerOrderConsumer,
+            registerPaymentsConsumer,
+            registerRestateServer,
+        ),
+    )
+
+	app.Run()
+}
+
+// newKafkaProducer constructs a shared Kafka producer and binds its lifecycle to Fx.
+func newKafkaProducer(cfg appconfig.Config, lc fx.Lifecycle) *events.Producer {
+    prod := events.NewProducerWithBrokers(cfg.Kafka.Brokers)
+    lc.Append(fx.Hook{
+        OnStop: func(context.Context) error {
+            return prod.Close()
+        },
+    })
+    return prod
 }
 
 // getenv returns the value of the environment variable key if set, otherwise defaultVal
@@ -527,7 +671,7 @@ type checkoutRequest struct {
 	MerchantID string         `json:"merchant_id"`
 }
 
-func startWebUIAndAPI() error {
+func newWebServer(addr string, prod *events.Producer, db *sql.DB) *http.Server {
 	mux := http.NewServeMux()
 
 	// Static web files under / (index.html) and /static/*
@@ -542,12 +686,14 @@ func startWebUIAndAPI() error {
 
 	// API
 	mux.Handle("/api/checkout", otelhttp.NewHandler(http.HandlerFunc(handleCheckout), "checkout"))
-	mux.Handle("/api/orders", otelhttp.NewHandler(http.HandlerFunc(handleOrdersList), "orders-list"))
-	mux.Handle("/api/orders/", otelhttp.NewHandler(http.HandlerFunc(handleOrders), "orders"))
-	mux.Handle("/api/merchants/", otelhttp.NewHandler(http.HandlerFunc(handleMerchantAPI), "merchant-api"))
+	mux.Handle("/api/orders", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handleOrdersList(db, w, r) }), "orders-list"))
+	mux.Handle("/api/orders/", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handleOrders(db, w, r) }), "orders"))
+	mux.Handle("/api/merchants/", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handleMerchantAPI(db, w, r) }), "merchant-api"))
 	mux.Handle("/api/cart/", otelhttp.NewHandler(http.HandlerFunc(handleCartAPI), "cart-api"))
-	mux.Handle("/api/debug/fix-orders", otelhttp.NewHandler(http.HandlerFunc(handleFixOrders), "fix-orders"))
-	mux.Handle("/api/webhooks/xendit", otelhttp.NewHandler(http.HandlerFunc(handleXenditWebhook), "xendit-webhook"))
+	mux.Handle("/api/debug/fix-orders", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handleFixOrders(db, w, r) }), "fix-orders"))
+	mux.Handle("/api/webhooks/xendit", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleXenditWebhook(prod, db, w, r)
+	}), "xendit-webhook"))
 
 	// AP2 Endpoints
 	mux.Handle("/ap2/mandates", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleCreateMandate), "ap2-create-mandate"))
@@ -556,25 +702,29 @@ func startWebUIAndAPI() error {
 	mux.Handle("/ap2/authorize", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleAuthorize), "ap2-authorize"))
 	mux.Handle("/ap2/execute", otelhttp.NewHandler(http.HandlerFunc(handleAP2Execute), "ap2-execute"))
 	mux.Handle("/ap2/status/", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleGetStatus), "ap2-get-status"))
-	mux.Handle("/webhooks/payment", otelhttp.NewHandler(http.HandlerFunc(handlePaymentWebhook), "payment-webhook"))
+	mux.Handle("/webhooks/payment", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlePaymentWebhook(prod, db, w, r)
+	}), "payment-webhook"))
 	mux.Handle("/ap2/refunds", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleRefund), "ap2-refund"))
 	mux.Handle("/ap2/refunds/", otelhttp.NewHandler(http.HandlerFunc(internalap2.HandleGetRefund), "ap2-get-refund"))
 
-	log.Println("Web UI available on :3000 (serving ./web)")
-	return http.ListenAndServe(":3000", withCORS(mux))
+	return &http.Server{
+		Addr:    addr,
+		Handler: withCORS(mux),
+	}
 }
 
 // GET /api/orders → list recent orders with payment + items
-func handleOrdersList(w http.ResponseWriter, r *http.Request) {
+func handleOrdersList(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if postgres.DB == nil {
+	if db == nil {
 		http.Error(w, "db unavailable", http.StatusInternalServerError)
 		return
 	}
-	rows, err := postgres.DB.Query(`
+	rows, err := db.Query(`
         SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.updated_at,
                COALESCE(p.status,''), COALESCE(p.invoice_url,''),
                COALESCE(oi.items_json,'[]')
@@ -648,7 +798,7 @@ func handleAP2Execute(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePaymentWebhook handles payment status updates from Xendit webhooks
-func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
+func handlePaymentWebhook(prod *events.Producer, db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -680,7 +830,7 @@ func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		totalAmount float64
 	)
 
-	if info, err := getOrderFromDBByPaymentID(externalID); err == nil {
+	if info, err := getOrderFromDBByPaymentID(db, externalID); err == nil {
 		if ord, ok := info["order"].(map[string]any); ok {
 			if id, ok := ord["id"].(string); ok {
 				orderID = id
@@ -705,7 +855,7 @@ func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	eventType, err := emitPaymentEvent(r.Context(), status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
+    eventType, err := emitPaymentEvent(r.Context(), prod, status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
 	if err != nil {
 		log.Printf("[Webhook] Failed to publish Kafka event for payment %s: %v", externalID, err)
 		http.Error(w, "failed to enqueue payment event", http.StatusInternalServerError)
@@ -724,7 +874,7 @@ func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // processCheckout processes the checkout request and returns the AP2 response
-func processCheckout(w http.ResponseWriter, checkoutReq checkoutRequest) {
+func processCheckout(db *sql.DB, w http.ResponseWriter, checkoutReq checkoutRequest) {
 	// Create a new request to the checkout endpoint
 	checkoutBody, _ := json.Marshal(checkoutReq)
 	checkoutReqHTTP, _ := http.NewRequest("POST", "http://localhost:3000/api/checkout", bytes.NewReader(checkoutBody))
@@ -760,17 +910,17 @@ func processCheckout(w http.ResponseWriter, checkoutReq checkoutRequest) {
 	// Fetch actual payment data from database
 	var invoiceURL string
 	var actualPaymentID string
-	if postgres.DB != nil {
-		payment, err := postgres.GetPaymentByOrderID(checkoutResult.OrderID)
+	if db != nil {
+		var id, invoice string
+		err := db.QueryRow(`SELECT id, COALESCE(invoice_url,'') FROM payments WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1`, checkoutResult.OrderID).Scan(&id, &invoice)
 		if err != nil {
 			log.Printf("[AP2] warning: failed to load payment for order %s: %v", checkoutResult.OrderID, err)
-			// Use checkout result values as fallback
 			invoiceURL = checkoutResult.InvoiceURL
 			actualPaymentID = paymentID
 		} else {
-			invoiceURL = payment.InvoiceURL
-			actualPaymentID = payment.ID
-			log.Printf("[AP2] Found payment data: payment_id=%s, invoice_url=%s", payment.ID, payment.InvoiceURL)
+			invoiceURL = invoice
+			actualPaymentID = id
+			log.Printf("[AP2] Found payment data: payment_id=%s, invoice_url=%s", id, invoice)
 		}
 	} else {
 		invoiceURL = checkoutResult.InvoiceURL
@@ -839,15 +989,33 @@ func handleCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode response from Restate to bubble up invoice_url
-	var wfResp map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&wfResp)
+    // Decode response from Restate to bubble up invoice_url
+    var wfResp map[string]any
+    _ = json.NewDecoder(resp.Body).Decode(&wfResp)
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"order_id": orderID, "invoice_url": wfResp["invoice_url"]})
+    // Best-effort: clear the user's cart right after successful checkout
+    // This is idempotent and UX-friendly; failures are only logged.
+    if req.CustomerID != "" {
+        runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+        clearURL := fmt.Sprintf("%s/cart.sv1.CartService/%s/ClearCart", runtimeURL, req.CustomerID)
+        clearReq := map[string]any{"customer_id": req.CustomerID}
+        if b, err := json.Marshal(clearReq); err == nil {
+            if resp2, err := http.Post(clearURL, "application/json", bytes.NewReader(b)); err == nil {
+                defer resp2.Body.Close()
+                if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
+                    log.Printf("[checkout] warning: ClearCart returned status %d for %s", resp2.StatusCode, req.CustomerID)
+                }
+            } else {
+                log.Printf("[checkout] warning: failed to ClearCart for %s: %v", req.CustomerID, err)
+            }
+        }
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    _ = json.NewEncoder(w).Encode(map[string]any{"order_id": orderID, "invoice_url": wfResp["invoice_url"]})
 }
 
-func handleOrders(w http.ResponseWriter, r *http.Request) {
+func handleOrders(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	// Routes:
 	// GET  /api/orders/{id}
 	// POST /api/orders/{id}/simulate_payment_success
@@ -1062,7 +1230,7 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Lookup payment_id from DB
-		info, err := getOrderFromDB(orderID)
+		info, err := getOrderFromDB(db, orderID)
 		if err != nil {
 			http.Error(w, "order not found", http.StatusNotFound)
 			return
@@ -1071,8 +1239,8 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 		paymentID, _ := orderMap["payment_id"].(string)
 		if paymentID == "" {
 			// Fallback: find latest payment by order_id
-			if postgres.DB != nil {
-				row := postgres.DB.QueryRow(`SELECT id FROM payments WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1`, orderID)
+		if db != nil {
+			row := db.QueryRow(`SELECT id FROM payments WHERE order_id = $1 ORDER BY updated_at DESC LIMIT 1`, orderID)
 				var pid string
 				if err := row.Scan(&pid); err == nil && pid != "" {
 					paymentID = pid
@@ -1096,8 +1264,8 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 
 		// Get the awakeable ID from the database
 		var awakeableID string
-		if postgres.DB != nil {
-			row := postgres.DB.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
+		if db != nil {
+			row := db.QueryRow(`SELECT awakeable_id FROM orders WHERE id = $1`, orderID)
 			if err := row.Scan(&awakeableID); err != nil {
 			}
 		}
@@ -1128,7 +1296,7 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	// Handle GET request for individual order
 	if r.Method == http.MethodGet {
 		orderID := path
-		resp, err := getOrderFromDB(orderID)
+		resp, err := getOrderFromDB(db, orderID)
 		if err != nil {
 			http.Error(w, "order not found or DB unavailable", http.StatusNotFound)
 			return
@@ -1154,12 +1322,12 @@ func postJSON(url string, body map[string]any) error {
 	return nil
 }
 
-func getOrderFromDB(orderID string) (map[string]any, error) {
-	if postgres.DB == nil {
+func getOrderFromDB(db *sql.DB, orderID string) (map[string]any, error) {
+	if db == nil {
 		return nil, sql.ErrConnDone
 	}
 
-	row := postgres.DB.QueryRow(`
+	row := db.QueryRow(`
 		SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
 		       COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
 		FROM orders o
@@ -1379,7 +1547,7 @@ func handleCartRemove(w http.ResponseWriter, r *http.Request, customerID string)
 	json.NewEncoder(w).Encode(result)
 }
 
-func handleMerchantAPI(w http.ResponseWriter, r *http.Request) {
+func handleMerchantAPI(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	// Parse URL path: /api/merchants/{merchant_id}/items[/{item_id}]
 	path := strings.TrimPrefix(r.URL.Path, "/api/merchants/")
 	parts := strings.Split(path, "/")
@@ -1400,7 +1568,7 @@ func handleMerchantAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// GET /api/merchants/{merchant_id}/items - List all items
-		handleListMerchantItems(w, r, runtimeURL, merchantID)
+		handleListMerchantItems(db, w, r, runtimeURL, merchantID)
 	case http.MethodPost:
 		// POST /api/merchants/{merchant_id}/items/{item_id} - Add new item
 		handleAddMerchantItem(w, r, runtimeURL, merchantID, itemID)
@@ -1415,46 +1583,64 @@ func handleMerchantAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleListMerchantItems(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID string) {
-	// Call Restate runtime HTTP endpoint directly
-	url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/ListItems", runtimeURL, merchantID)
+func handleListMerchantItems(db *sql.DB, w http.ResponseWriter, r *http.Request, runtimeURL, merchantID string) {
+    // Prefer authoritative stock from the database to avoid stale Restate cache
+    if db != nil {
+        items, err := postgres.GetMerchantItems(merchantID)
+        if err == nil {
+            w.Header().Set("Content-Type", "application/json")
+            // Normalize payload shape for UI consumption
+            out := make([]map[string]any, 0, len(items))
+            for _, it := range items {
+                out = append(out, map[string]any{
+                    "itemId":   it.ItemId,
+                    "name":     it.Name,
+                    "quantity": it.Quantity,
+                    "price":    it.Price,
+                })
+            }
+            _ = json.NewEncoder(w).Encode(map[string]any{"items": out})
+            return
+        }
+        // If DB query fails, fall back to Restate runtime for resiliency
+    }
 
-	// Create request body for ListItems
-	reqBody := map[string]any{
-		"merchant_id": merchantID,
-		"page_size":   100, // Get all items for now
-		"page_token":  "",
-	}
-	reqBytes, _ := json.Marshal(reqBody)
+    // Fallback: call Restate runtime (may be stale if object state not in sync)
+    url := fmt.Sprintf("%s/merchant.sv1.MerchantService/%s/ListItems", runtimeURL, merchantID)
+    reqBody := map[string]any{
+        "merchant_id": merchantID,
+        "page_size":   100,
+        "page_token":  "",
+    }
+    reqBytes, _ := json.Marshal(reqBody)
+    resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
+    if err != nil {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusInternalServerError)
+        _ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
+        return
+    }
+    defer resp.Body.Close()
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(reqBytes))
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to reach Restate runtime", "detail": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        var detail map[string]any
+        _ = json.NewDecoder(resp.Body).Decode(&detail)
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusInternalServerError)
+        _ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to fetch merchant items", "detail": detail})
+        return
+    }
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var detail map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&detail)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to fetch merchant items", "detail": detail})
-		return
-	}
+    var response map[string]any
+    if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusInternalServerError)
+        _ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to decode response", "detail": err.Error()})
+        return
+    }
 
-	var response map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to decode response", "detail": err.Error()})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(response)
+    w.Header().Set("Content-Type", "application/json")
+    _ = json.NewEncoder(w).Encode(response)
 }
 
 func handleAddMerchantItem(w http.ResponseWriter, r *http.Request, runtimeURL, merchantID, itemID string) {
@@ -1562,19 +1748,19 @@ func handleDeleteMerchantItem(w http.ResponseWriter, r *http.Request, runtimeURL
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-func handleFixOrders(w http.ResponseWriter, r *http.Request) {
+func handleFixOrders(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if postgres.DB == nil {
+	if db == nil {
 		http.Error(w, "db unavailable", http.StatusInternalServerError)
 		return
 	}
 
 	// Update order_items that have empty item_id or name
 	// This fixes orders that were created before merchant_items data was available
-	_, err := postgres.DB.Exec(`
+	_, err := db.Exec(`
 		UPDATE order_items 
 		SET item_id = 'i_001', 
 		    name = 'Apple',
@@ -1591,7 +1777,7 @@ func handleFixOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleXenditWebhook handles Xendit payment callbacks
-func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
+func handleXenditWebhook(prod *events.Producer, db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1636,7 +1822,7 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 	var orderID string
 	var customerID string
 
-	if info, err := getOrderFromDBByPaymentID(externalID); err == nil {
+	if info, err := getOrderFromDBByPaymentID(db, externalID); err == nil {
 		if ord, ok := info["order"].(map[string]any); ok {
 			if id, ok := ord["id"].(string); ok {
 				orderID = id
@@ -1661,7 +1847,7 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 	switch status {
 	case "PAID":
 		log.Printf("[Xendit Webhook] Payment completed for external_id: %s", externalID)
-		eventType, err := emitPaymentEvent(r.Context(), status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
+		eventType, err := emitPaymentEvent(r.Context(), prod, status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
 		if err != nil {
 			log.Printf("[Xendit Webhook] Failed to enqueue payment event: %v", err)
 			http.Error(w, "failed to enqueue event", http.StatusInternalServerError)
@@ -1675,7 +1861,7 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 
 	case "EXPIRED":
 		log.Printf("[Xendit Webhook] Payment expired for external_id: %s", externalID)
-		eventType, err := emitPaymentEvent(r.Context(), status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
+		eventType, err := emitPaymentEvent(r.Context(), prod, status, orderID, externalID, customerID, invoiceURL, totalAmount, invoiceID)
 		if err != nil {
 			log.Printf("[Xendit Webhook] Failed to enqueue payment event: %v", err)
 			http.Error(w, "failed to enqueue event", http.StatusInternalServerError)
@@ -1701,12 +1887,12 @@ func handleXenditWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // getOrderFromDBByPaymentID retrieves order information by payment ID
-func getOrderFromDBByPaymentID(paymentID string) (map[string]any, error) {
-	if postgres.DB == nil {
+func getOrderFromDBByPaymentID(db *sql.DB, paymentID string) (map[string]any, error) {
+	if db == nil {
 		return nil, sql.ErrConnDone
 	}
 
-	row := postgres.DB.QueryRow(`
+	row := db.QueryRow(`
 		SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
 		       COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
 		FROM orders o

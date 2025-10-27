@@ -435,6 +435,22 @@ func HandleExecute(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[AP2] Checkout workflow completed: order_id=%s, payment_id=%s, invoice_url=%s", orderID, paymentID, invoiceURL)
 
+	// Best-effort: clear the user's cart after order creation
+	if customerID != "" {
+		runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://localhost:8080")
+		clearURL := fmt.Sprintf("%s/cart.sv1.CartService/%s/ClearCart", runtimeURL, customerID)
+		clearReq := map[string]any{"customer_id": customerID}
+		b, _ := json.Marshal(clearReq)
+		if resp2, err := http.Post(clearURL, "application/json", bytes.NewReader(b)); err != nil {
+			log.Printf("[AP2] warning: failed to clear cart for %s: %v", customerID, err)
+		} else {
+			defer resp2.Body.Close()
+			if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
+				log.Printf("[AP2] warning: clear cart returned status %d for %s", resp2.StatusCode, customerID)
+			}
+		}
+	}
+
 	// Store the execution record in the database so we can track it
 	if postgres.DB != nil {
 		// Test database connection before attempting insert

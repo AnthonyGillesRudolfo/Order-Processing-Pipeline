@@ -1,5 +1,6 @@
 # Binaries
 order-processing-pipeline
+server
 *.exe
 *.out
 
@@ -9,6 +10,11 @@ build/
 
 # Env & secrets
 .env
+
+# Logs and caches
+server.log
+.bufcache/
+mcp-server/__pycache__/
 
 # macOS
 .DS_Store

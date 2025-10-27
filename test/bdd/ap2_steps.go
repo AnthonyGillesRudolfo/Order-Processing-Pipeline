@@ -11,6 +11,7 @@ import (
     "strings"
 
     ap2handlers "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/ap2"
+    postgresdb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/storage/postgres"
     "github.com/cucumber/godog"
 )
 
@@ -21,6 +22,7 @@ func (w *PipelineWorld) registerAP2Steps(sc *godog.ScenarioContext) {
     sc.Step(`^I execute the AP2 intent$`, w.ap2ExecuteIntent)
     sc.Step(`^the AP2 execute response contains an order and invoice link$`, w.ap2AssertExecuteResponse)
     sc.Step(`^AP2 status for the execution is available$`, w.ap2AssertStatus)
+    sc.Step(`^the cart for customer "([^"]+)" is empty$`, w.ap2AssertCartEmpty)
 }
 
 // ap2StartServers starts a stub Restate runtime (cart + checkout) and an AP2 HTTP server that
@@ -31,25 +33,55 @@ func (w *PipelineWorld) ap2StartServers() error {
     // Stub Restate runtime endpoints used by AP2 handlers
     runtimeMux := http.NewServeMux()
     runtimeMux.HandleFunc("/cart.sv1.CartService/", func(wr http.ResponseWriter, r *http.Request) {
-        if !strings.HasSuffix(r.URL.Path, "/ViewCart") || r.Method != http.MethodPost {
+        // Path: /cart.sv1.CartService/{customer}/{Method}
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/cart.sv1.CartService/"), "/")
+        if len(parts) < 2 || r.Method != http.MethodPost {
             http.Error(wr, "not found", http.StatusNotFound)
             return
         }
+        customerID := parts[0]
+        method := parts[1]
+
         b, _ := io.ReadAll(r.Body)
         _ = r.Body.Close()
-        w.debugf("[AP2-Test] Runtime ViewCart %s body=%s", r.URL.Path, string(b))
-        // Minimal cart payload expected by handlers
-        resp := map[string]any{
-            "cart_state": map[string]any{
-                "merchant_id": "merchant-001",
-                "items": []map[string]any{
-                    {"product_id": "sku-1", "name": "Widget", "quantity": 1, "unit_price": 49.99},
-                },
-                "total_amount": 49.99,
-            },
+        w.debugf("[AP2-Test] Runtime Cart %s %s body=%s", method, r.URL.Path, string(b))
+
+        // Seed a default non-empty cart if missing
+        seedIfMissing := func() {
+            if _, ok := w.ap2RuntimeCarts[customerID]; !ok {
+                w.ap2RuntimeCarts[customerID] = ap2CartState{
+                    MerchantID:  "merchant-001",
+                    Items:       []map[string]any{{"product_id": "sku-1", "name": "Widget", "quantity": 1.0, "unit_price": 49.99}},
+                    TotalAmount: 49.99,
+                }
+            }
         }
-        wr.Header().Set("Content-Type", "application/json")
-        _ = json.NewEncoder(wr).Encode(resp)
+
+        switch method {
+        case "ViewCart":
+            seedIfMissing()
+            st := w.ap2RuntimeCarts[customerID]
+            resp := map[string]any{
+                "cart_state": map[string]any{
+                    "merchant_id":  st.MerchantID,
+                    "items":        st.Items,
+                    "total_amount": st.TotalAmount,
+                },
+            }
+            wr.Header().Set("Content-Type", "application/json")
+            _ = json.NewEncoder(wr).Encode(resp)
+            return
+        case "ClearCart":
+            // Clear in-memory state
+            w.ap2RuntimeCarts[customerID] = ap2CartState{MerchantID: "", Items: []map[string]any{}, TotalAmount: 0}
+            resp := map[string]any{"success": true, "message": "Cart cleared successfully"}
+            wr.Header().Set("Content-Type", "application/json")
+            _ = json.NewEncoder(wr).Encode(resp)
+            return
+        default:
+            http.Error(wr, "not found", http.StatusNotFound)
+            return
+        }
     })
     runtimeMux.HandleFunc("/order.sv1.OrderService/", func(wr http.ResponseWriter, r *http.Request) {
         // Path: /order.sv1.OrderService/{orderId}/Checkout
@@ -65,6 +97,22 @@ func (w *PipelineWorld) ap2StartServers() error {
         b, _ := io.ReadAll(r.Body)
         _ = r.Body.Close()
         w.debugf("[AP2-Test] Runtime Checkout %s order=%s body=%s", r.URL.Path, orderID, string(b))
+
+        // Parse customer_id from request to clear their cart after checkout
+        var j map[string]any
+        _ = json.Unmarshal(b, &j)
+        if cid, _ := j["customer_id"].(string); cid != "" {
+            // emulate cart clearing side effect of checkout
+            w.ap2RuntimeCarts[cid] = ap2CartState{MerchantID: "", Items: []map[string]any{}, TotalAmount: 0}
+        }
+        // In tests, ensure the referenced order row exists to satisfy FK constraints
+        if postgresdb.DB != nil {
+            _, _ = postgresdb.DB.Exec(`
+                INSERT INTO orders (id, customer_id, status, total_amount)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (id) DO NOTHING
+            `, orderID, "customer-abc", "PENDING", 49.99)
+        }
         resp := map[string]any{
             "orderId":     orderID,
             "paymentId":   "pay-" + orderID,
@@ -125,6 +173,7 @@ func (w *PipelineWorld) ap2CreateIntent(customerID, cartID string) error {
     if mandateID == "" {
         return fmt.Errorf("mandate_id missing in response")
     }
+    w.ap2MandateID = mandateID
     w.debugf("[AP2-Test] Mandate created mandate_id=%s", mandateID)
 
     body := map[string]any{
@@ -156,7 +205,7 @@ func (w *PipelineWorld) ap2AuthorizeIntent() error {
     }
     body := map[string]any{
         "intent_id":  w.ap2IntentID,
-        "mandate_id": "mdt_test",
+        "mandate_id": w.ap2MandateID,
     }
     b, _ := json.Marshal(body)
     url := w.ap2Base + "/ap2/authorize"
@@ -253,5 +302,38 @@ func (w *PipelineWorld) ap2AssertStatus() error {
         return fmt.Errorf("executionId mismatch: expected %s got %s", w.ap2ExecutionID, execID)
     }
     w.debugf("[AP2-Test] Status OK exec=%s", execID)
+    return nil
+}
+
+// ap2AssertCartEmpty asserts that the in-memory cart for the given customer is empty via the stub runtime API
+func (w *PipelineWorld) ap2AssertCartEmpty(customerID string) error {
+    if w.ap2RuntimeBase == "" {
+        return fmt.Errorf("AP2 runtime not started")
+    }
+    // Ask the runtime for the cart contents
+    url := fmt.Sprintf("%s/cart.sv1.CartService/%s/ViewCart", w.ap2RuntimeBase, customerID)
+    body := map[string]any{"customer_id": customerID}
+    b, _ := json.Marshal(body)
+    resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != http.StatusOK {
+        rb, _ := io.ReadAll(resp.Body)
+        return fmt.Errorf("view cart status %d: %s", resp.StatusCode, string(rb))
+    }
+    var j map[string]any
+    _ = json.NewDecoder(resp.Body).Decode(&j)
+    cs, _ := j["cart_state"].(map[string]any)
+    if cs == nil {
+        return fmt.Errorf("missing cart_state")
+    }
+    items, _ := cs["items"].([]any)
+    total, _ := cs["total_amount"].(float64)
+    if len(items) != 0 || total != 0 {
+        return fmt.Errorf("expected empty cart, got items=%d total=%.2f", len(items), total)
+    }
+    w.debugf("[AP2-Test] Cart is empty for customer %s", customerID)
     return nil
 }
