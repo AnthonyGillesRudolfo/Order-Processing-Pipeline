@@ -1,11 +1,12 @@
 package postgres
 
 import (
-	"context"
-	"database/sql"
-	"fmt"
-	"log"
-	"time"
+    "context"
+    "database/sql"
+    "fmt"
+    "log"
+    "time"
+    "sync"
 
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
@@ -28,6 +29,7 @@ type DatabaseConfig struct {
 
 // DB is the global database connection pool
 var DB *sql.DB
+var dbMu sync.Mutex
 
 // tracer for database operations
 var tracer trace.Tracer
@@ -58,51 +60,73 @@ func traceDBOperation(ctx context.Context, operation, query string) (context.Con
 
 // InitDatabase initializes the database connection pool and creates tables
 func InitDatabase(config DatabaseConfig) error {
-	// Initialize tracer
-	initTracer()
+    // Initialize tracer
+    initTracer()
 
-	// Build connection string
-	connStr := fmt.Sprintf(
-		"host=%s port=%d dbname=%s user=%s password=%s sslmode=disable",
-		config.Host,
-		config.Port,
-		config.Database,
-		config.User,
-		config.Password,
-	)
-
-	// Open database connection
-	var err error
-	DB, err = sql.Open("postgres", connStr)
-	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
-	}
-
-	// Configure connection pool
-	DB.SetMaxOpenConns(25)
-	DB.SetMaxIdleConns(5)
-	DB.SetConnMaxLifetime(5 * time.Minute)
-
-	// Test connection
-	if err := DB.Ping(); err != nil {
-		return fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	log.Printf("Successfully connected to PostgreSQL database: %s", config.Database)
-
-	// Schema is managed by migrations; do not create tables at runtime
-
-	return nil
+    // Use the shared open helper
+    _, err := OpenDatabase(config)
+    return err
 }
 
 // createTables removed; schema is managed via migrations
 
 // CloseDatabase closes the database connection
 func CloseDatabase() error {
-	if DB != nil {
-		return DB.Close()
-	}
-	return nil
+    dbMu.Lock()
+    defer dbMu.Unlock()
+    if DB != nil {
+        err := DB.Close()
+        DB = nil
+        return err
+    }
+    return nil
+}
+
+// OpenDatabase opens and configures a PostgreSQL connection, assigns it to the
+// package global DB for backward compatibility, and returns the *sql.DB handle.
+func OpenDatabase(config DatabaseConfig) (*sql.DB, error) {
+    dbMu.Lock()
+    defer dbMu.Unlock()
+
+    if DB != nil {
+        return DB, nil
+    }
+
+    // Initialize tracer
+    initTracer()
+
+    // Build connection string
+    connStr := fmt.Sprintf(
+        "host=%s port=%d dbname=%s user=%s password=%s sslmode=disable",
+        config.Host,
+        config.Port,
+        config.Database,
+        config.User,
+        config.Password,
+    )
+
+    // Open database connection
+    db, err := sql.Open("postgres", connStr)
+    if err != nil {
+        return nil, fmt.Errorf("failed to open database: %w", err)
+    }
+
+    // Configure connection pool
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(5)
+    db.SetConnMaxLifetime(5 * time.Minute)
+
+    // Test connection
+    if err := db.Ping(); err != nil {
+        _ = db.Close()
+        return nil, fmt.Errorf("failed to ping database: %w", err)
+    }
+
+    // Assign to package-level for existing call sites
+    DB = db
+
+    log.Printf("Successfully connected to PostgreSQL database: %s", config.Database)
+    return db, nil
 }
 
 // Order ops
