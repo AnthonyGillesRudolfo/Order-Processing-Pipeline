@@ -24,7 +24,7 @@ buf-generate:
 	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf generate
 
 buf-breaking:
-	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf breaking --against '../.git#branch=master,subdir=api'
+	@cd api && BUF_CACHE_DIR=../$(BUF_CACHE_DIR) buf breaking --against 'https://github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline.git#branch=master,subdir=api'
 
 # Generate Go code via buf
 proto: buf-lint buf-generate buf-breaking
