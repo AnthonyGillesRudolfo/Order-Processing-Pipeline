@@ -67,6 +67,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fetch all branches (for Buf breaking check)
+        run: git fetch --all
+
       - name: Set up Buf
         uses: bufbuild/buf-setup-action@v1
         with:
