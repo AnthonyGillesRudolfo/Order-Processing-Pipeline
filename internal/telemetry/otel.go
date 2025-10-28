@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"os"
+    "net/url"
+    "strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -17,18 +19,32 @@ import (
 func InitTracer(serviceName string) func() {
 	ctx := context.Background()
 
-	// Get OTLP endpoint from environment or use default
-	otlpEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-	if otlpEndpoint == "" {
-		otlpEndpoint = "http://localhost:4318/v1/traces" // Default OTLP HTTP endpoint with path
-	}
+    // Resolve OTLP endpoint from env; accept full URL or host:port
+    raw := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+    if raw == "" {
+        raw = "http://localhost:4318/v1/traces"
+    }
+    endpoint := "localhost:4318"
+    path := "/v1/traces"
+    insecure := true
+    if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+        if u, err := url.Parse(raw); err == nil {
+            if u.Host != "" { endpoint = u.Host }
+            if u.Path != "" { path = u.Path }
+            insecure = (u.Scheme == "http")
+        }
+    } else {
+        // host:port form
+        endpoint = raw
+    }
 
-	// Create OTLP HTTP exporter
-	client := otlptracehttp.NewClient(
-		otlptracehttp.WithEndpoint("localhost:4318"),
-		otlptracehttp.WithURLPath("/v1/traces"),
-		otlptracehttp.WithInsecure(), // For development - use TLS in production
-	)
+    // Create OTLP HTTP exporter
+    opts := []otlptracehttp.Option{
+        otlptracehttp.WithEndpoint(endpoint),
+        otlptracehttp.WithURLPath(path),
+    }
+    if insecure { opts = append(opts, otlptracehttp.WithInsecure()) }
+    client := otlptracehttp.NewClient(opts...)
 	exporter, err := otlptrace.New(ctx, client)
 	if err != nil {
 		log.Fatalf("Failed to create OTLP exporter: %v", err)

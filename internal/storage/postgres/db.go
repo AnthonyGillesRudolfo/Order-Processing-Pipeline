@@ -6,6 +6,7 @@ import (
     "fmt"
     "log"
     "time"
+    "sync"
 
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
@@ -28,6 +29,7 @@ type DatabaseConfig struct {
 
 // DB is the global database connection pool
 var DB *sql.DB
+var dbMu sync.Mutex
 
 // tracer for database operations
 var tracer trace.Tracer
@@ -70,8 +72,12 @@ func InitDatabase(config DatabaseConfig) error {
 
 // CloseDatabase closes the database connection
 func CloseDatabase() error {
+    dbMu.Lock()
+    defer dbMu.Unlock()
     if DB != nil {
-        return DB.Close()
+        err := DB.Close()
+        DB = nil
+        return err
     }
     return nil
 }
@@ -79,6 +85,13 @@ func CloseDatabase() error {
 // OpenDatabase opens and configures a PostgreSQL connection, assigns it to the
 // package global DB for backward compatibility, and returns the *sql.DB handle.
 func OpenDatabase(config DatabaseConfig) (*sql.DB, error) {
+    dbMu.Lock()
+    defer dbMu.Unlock()
+
+    if DB != nil {
+        return DB, nil
+    }
+
     // Initialize tracer
     initTracer()
 
