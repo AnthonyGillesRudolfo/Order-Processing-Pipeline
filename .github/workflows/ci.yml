@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  go-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: orderpipeline_test
+          POSTGRES_USER: orderpipelineadmin
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U orderpipelineadmin -d orderpipeline_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ORDER_DB_HOST: localhost
+      ORDER_DB_PORT: "5432"
+      ORDER_DB_NAME: orderpipeline_test
+      ORDER_DB_USER: orderpipelineadmin
+      ORDER_DB_PASSWORD: postgres
+      ALLOW_DB_TRUNCATE_FOR_TESTS: "true"
+      PGSSLMODE: disable
+      PGPASSWORD: postgres
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Postgres client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h "$ORDER_DB_HOST" -p "$ORDER_DB_PORT" -U "$ORDER_DB_USER"; do
+            sleep 1
+          done
+
+      - name: Go test (unit + BDD)
+        run: go test ./... -count=1
+
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: latest
+
+      - name: Generate protobuf artifacts
+        run: make proto
+
+      - name: Ensure protobuf outputs are clean
+        run: make proto-check-clean
