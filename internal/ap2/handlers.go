@@ -67,27 +67,7 @@ type ExecuteRequest struct {
 	IntentID        string `json:"intent_id"`
 }
 
-// New AP2 response models with camelCase and envelope
-type AP2ExecuteResult struct {
-	ExecutionID string `json:"executionId"`
-	Status      string `json:"status"`      // "pending" | "completed" | "failed" | "refunded"
-	InvoiceLink string `json:"invoiceLink"` // rename from invoice_url
-	PaymentID   string `json:"paymentId"`
-	OrderID     string `json:"orderId"`
-}
-
-type AP2StatusResult struct {
-	ExecutionID string `json:"executionId"`
-	Status      string `json:"status"`
-	InvoiceLink string `json:"invoiceLink"`
-	PaymentID   string `json:"paymentId"`
-	OrderID     string `json:"orderId"`
-	CreatedAt   string `json:"createdAt"`
-}
-
-type AP2Envelope[T any] struct {
-	Result T `json:"result"`
-}
+// Shared response models moved to types.go
 
 // Legacy response type (keeping for backward compatibility if needed)
 type ExecuteResponse struct {

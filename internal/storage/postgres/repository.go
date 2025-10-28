@@ -244,3 +244,89 @@ func (r *Repository) UpdateShipmentStatus(shipmentID string, status orderpb.Ship
     log.Printf("[DB] Updated shipment status: %s -> %s", shipmentID, status.String())
     return nil
 }
+
+// GetOrderWithPayment returns consolidated order + payment details by order ID.
+func (r *Repository) GetOrderWithPayment(orderID string) (map[string]any, error) {
+    if r.DB == nil {
+        return nil, fmt.Errorf("database not initialized")
+    }
+    row := r.DB.QueryRow(`
+        SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
+               COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
+        FROM orders o
+        LEFT JOIN payments p ON p.id = o.payment_id
+        WHERE o.id = $1
+    `, orderID)
+
+    var (
+        id, customerID, status, paymentID string
+        shipmentID, trackingNumber        sql.NullString
+        totalAmount                       sql.NullFloat64
+        updatedAt                         string
+        paymentStatus                     string
+        invoiceURL                        string
+    )
+    if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentID, &shipmentID, &trackingNumber, &updatedAt, &paymentStatus, &invoiceURL); err != nil {
+        return nil, err
+    }
+
+    return map[string]any{
+        "order": map[string]any{
+            "id":              id,
+            "customer_id":     customerID,
+            "status":          status,
+            "total_amount":    totalAmount.Float64,
+            "payment_id":      paymentID,
+            "shipment_id":     shipmentID.String,
+            "tracking_number": trackingNumber.String,
+            "updated_at":      updatedAt,
+        },
+        "payment": map[string]any{
+            "status":      paymentStatus,
+            "invoice_url": invoiceURL,
+        },
+    }, nil
+}
+
+// GetOrderWithPaymentByPaymentID returns consolidated order + payment details by payment ID.
+func (r *Repository) GetOrderWithPaymentByPaymentID(paymentID string) (map[string]any, error) {
+    if r.DB == nil {
+        return nil, fmt.Errorf("database not initialized")
+    }
+    row := r.DB.QueryRow(`
+        SELECT o.id, o.customer_id, o.status, o.total_amount, o.payment_id, o.shipment_id, o.tracking_number, o.updated_at,
+               COALESCE(p.status, '') AS payment_status, COALESCE(p.invoice_url, '') AS invoice_url
+        FROM orders o
+        LEFT JOIN payments p ON p.id = o.payment_id
+        WHERE o.payment_id = $1
+    `, paymentID)
+
+    var (
+        id, customerID, status, paymentIDResult string
+        shipmentID, trackingNumber              sql.NullString
+        totalAmount                             sql.NullFloat64
+        updatedAt                               string
+        paymentStatus                           string
+        invoiceURL                              string
+    )
+    if err := row.Scan(&id, &customerID, &status, &totalAmount, &paymentIDResult, &shipmentID, &trackingNumber, &updatedAt, &paymentStatus, &invoiceURL); err != nil {
+        return nil, err
+    }
+
+    return map[string]any{
+        "order": map[string]any{
+            "id":              id,
+            "customer_id":     customerID,
+            "status":          status,
+            "total_amount":    totalAmount.Float64,
+            "payment_id":      paymentIDResult,
+            "shipment_id":     shipmentID.String,
+            "tracking_number": trackingNumber.String,
+            "updated_at":      updatedAt,
+        },
+        "payment": map[string]any{
+            "status":      paymentStatus,
+            "invoice_url": invoiceURL,
+        },
+    }, nil
+}
