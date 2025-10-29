@@ -117,6 +117,13 @@ curl http://localhost:4040/api/tunnels
 # Verify webhook URL in Xendit dashboard
 ```
 
+## 🤖 Continuous Deployment
+
+- GitHub Actions workflow `.github/workflows/cd.yml` runs on pushes to `master`, releases, or manual dispatch. It executes `go test ./...`, builds the Docker image defined in `Dockerfile`, and publishes it to GitHub Container Registry (`ghcr.io`) under `ghcr.io/<owner>/<repo>`.
+- To additionally publish to Google Container Registry when your billing/API issue is resolved, add a repository variable `GCP_PROJECT_ID` and a repository secret `GCP_SA_KEY`. The secret must contain a JSON service account key with `roles/storage.admin` (or a narrower role that grants `storage.objects.create` and `storage.objects.delete`) on the target project. The workflow will automatically push images to `gcr.io/<GCP_PROJECT_ID>/order-processing-pipeline`.
+- If you prefer a different image name or registry path, update the `IMAGE_NAME` environment value in `cd.yml`.
+- Set any runtime environment variables (database URLs, Kafka brokers, etc.) on the target platform before deploying the container produced by the workflow.
+
 ## 🔌 AP2 Integration
 
 The system now includes AP2 (Payment Protocol) integration for seamless checkout experiences:
