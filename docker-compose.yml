@@ -1,5 +1,18 @@
-# version: "3.8"
+version: "3.8"
+
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: order-postgres
+    environment:
+      POSTGRES_DB: orderpipeline
+      POSTGRES_USER: orderpipelineadmin
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   kafka:
     image: apache/kafka:latest
     container_name: kafka
@@ -9,11 +22,10 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
-
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -25,13 +37,14 @@ services:
       - "8080:8080"   # Restate Runtime API (invoke/bind services)
       - "9070:9070"   # Admin/Console API
     restart: unless-stopped
+    depends_on:
+      - kafka
 
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 8080 && nc -z localhost 9070"]
       interval: 10s
       timeout: 3s
       retries: 10
-
 
   mailhog:
     image: mailhog/mailhog:latest
@@ -52,7 +65,28 @@ services:
       - "4317:4317"     # OTLP gRPC receiver
       - "4318:4318"     # OTLP HTTP receiver
 
-  
+  app:
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:latest
+    ports:
+      - "3000:3000"
+      - "9081:9081"
+    environment:
+      ORDER_DB_HOST: postgres
+      ORDER_DB_PORT: 5432
+      ORDER_DB_USER: orderpipelineadmin
+      ORDER_DB_PASSWORD: postgres
+      ORDER_DB_NAME: orderpipeline
+      PGSSLMODE: disable
+      KAFKA_BROKERS: kafka:9092
+      JAEGER_ENDPOINT: http://jaeger:4318
+      RESTATE_ENDPOINT: http://restate:8080
+    depends_on:
+      - postgres
+      - kafka
+      - restate
+      - jaeger
+      - mailhog
+
 volumes:
+  postgres_data:
   jaeger_data:
-    
