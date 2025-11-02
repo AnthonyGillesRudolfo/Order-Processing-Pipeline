@@ -1,32 +1,41 @@
-# syntax=docker/dockerfile:1.7
+# ---- Build stage ----
+FROM golang:1.25-alpine AS builder
+ENV GOTOOLCHAIN=auto
+WORKDIR /app
 
-##
-## Build the Go server binary
-##
-FROM golang:1.25 AS builder
+# Enable static builds
+ENV CGO_ENABLED=0
 
-WORKDIR /workspace
+# Dependencies first for better caching
+COPY go.mod go.sum ./
+COPY third_party/ ./third_party/ 
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
+# Bring in the rest
 COPY . .
 
-RUN go mod download
+# Build both binaries (smaller & reproducible)
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server/main.go && \
+    go build -trimpath -ldflags="-s -w" -o /out/emailworker ./cmd/emailworker/main.go
 
-# Build a statically linked binary for linux/amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o /workspace/bin/server ./cmd/server
+# ---- Runtime stage ----
+FROM alpine:3.20
+WORKDIR /app
 
-##
-## Runtime image
-##
-FROM gcr.io/distroless/base-debian12:nonroot
+# TLS & timezones for outbound HTTPS and sane time handling
+RUN apk add --no-cache ca-certificates tzdata
 
-WORKDIR /workspace
+# Copy binaries
+COPY --from=builder /out/server /app/order-pipeline
+COPY --from=builder /out/emailworker /app/emailworker
 
-# Copy the compiled binary and static assets
-COPY --from=builder /workspace/bin/server ./server
-COPY --from=builder /workspace/web ./web
+# Static web assets (choose one location; keeping /app/web)
+COPY web/ /app/web/
 
-EXPOSE 3000
-EXPOSE 9081
+# (Optional) drop privileges
+# RUN adduser -D -H -s /sbin/nologin app && chown -R app:app /app
+# USER app
 
-ENTRYPOINT ["/workspace/server"]
+EXPOSE 3000 9081
+ENTRYPOINT ["/app/order-pipeline"]
