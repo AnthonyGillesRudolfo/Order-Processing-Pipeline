@@ -614,17 +614,31 @@ type checkoutRequest struct {
 }
 
 func newWebServer(addr string, prod *events.Producer, db *sql.DB, repo *postgres.Repository) *http.Server {
-	mux := http.NewServeMux()
+    mux := http.NewServeMux()
 
-	// Static web files under / (index.html) and /static/*
-	_, src, _, _ := runtime.Caller(0)
-	base := filepath.Dir(src) // cmd/server
-	webDir := filepath.Join(base, "..", "..", "web")
-	webDir, _ = filepath.Abs(webDir)
+    // Static web files under / (index.html) and /static/*)
+    // Prefer WEB_DIR env (docker sets WEB_DIR=/app/web). Fallbacks for local dev.
+    webDir := os.Getenv("WEB_DIR")
+    if webDir == "" {
+        // Common runtime image path where Dockerfile copies assets
+        webDir = "/app/web"
+    }
+    if st, err := os.Stat(webDir); err != nil || !st.IsDir() {
+        // Fallback to source-relative path for local `go run`.
+        if _, src, _, ok := runtime.Caller(0); ok {
+            base := filepath.Dir(src) // cmd/server
+            guess := filepath.Join(base, "..", "..", "web")
+            if abs, err := filepath.Abs(guess); err == nil {
+                webDir = abs
+            } else {
+                webDir = guess
+            }
+        }
+    }
 
-	fileServer := http.FileServer(http.Dir(webDir))
-	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
-	mux.Handle("/", fileServer)
+    fileServer := http.FileServer(http.Dir(webDir))
+    mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
+    mux.Handle("/", fileServer)
 
     // API
     mux.Handle("/api/checkout", otelhttp.NewHandler(http.HandlerFunc(handleCheckout), "checkout"))

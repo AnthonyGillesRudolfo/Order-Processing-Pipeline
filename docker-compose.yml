@@ -87,7 +87,9 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_RESOURCE_ATTRIBUTES: service.name=order-processing-pipeline
-      JAEGER_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: order-processing-pipeline
+      OTEL_LOG_LEVEL: debug
+      WEB_DIR: /app/web
       SMTP_HOST: mailhog
       SMTP_PORT: 1025
       SMTP_FROM: "noreply@example.test"
@@ -105,7 +107,6 @@ services:
       - kafka
       - mailhog
       - postgres
-    command: ["/app/emailworker"]
     environment:
       KAFKA_BROKERS: kafka:9092     # already good
       SMTP_HOST: mailhog
@@ -118,6 +119,13 @@ services:
       ORDER_DB_USER: orderpipelineadmin
       ORDER_DB_PASSWORD: postgres
       ORDER_DB_NAME: orderpipeline
+      OTEL_SERVICE_NAME: emailworker
+      OTEL_RESOURCE_ATTRIBUTES: service.name=emailworker
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_LOG_LEVEL: debug
     restart: unless-stopped
 
 volumes:
