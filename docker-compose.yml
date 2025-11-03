@@ -1,14 +1,17 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: order-postgres
+    container_name: postgres
     environment:
       POSTGRES_DB: orderpipeline
       POSTGRES_USER: orderpipelineadmin
       POSTGRES_PASSWORD: postgres
     ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderpipelineadmin -d orderpipeline -h 127.0.0.1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -45,9 +48,10 @@ services:
 
   mailhog:
     image: mailhog/mailhog:latest
+    container_name: mailhog
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -56,78 +60,111 @@ services:
       - SPAN_STORAGE_TYPE=memory
       - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "16686:16686"
-      - "6831:6831/udp"
-      - "14268:14268"
-      - "4317:4317"
-      - "4318:4318"
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
 
-  app:
-    build: .
-    image: order-processing-pipeline:dev
-    ports:
-      - "3000:3000"
-      - "9081:9081"
-    restart: unless-stopped
+  # ---- runs ONCE, migrates schema, then exits ----
+  migrator:
+    image: ghcr.io/yourorg/order-processing-pipeline-migrator:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
+      DB_URL: postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable
+    entrypoint: ["/bin/sh","-lc","/usr/local/bin/migrate -path /migrations -database \"$${DB_URL}\" up"]
+    restart: "no"
+
+  # ---- your application ----
+  app:
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-67e4a4a
+    container_name: app
+    ports:
+      - "3000:3000"  # Web UI
+      - "9081:9081"  # Restate server
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+      restate:
+        condition: service_started
+      jaeger:
+        condition: service_started
+    environment:
+      # Postgres
       ORDER_DB_HOST: postgres
       ORDER_DB_PORT: 5432
       ORDER_DB_USER: orderpipelineadmin
       ORDER_DB_PASSWORD: postgres
       ORDER_DB_NAME: orderpipeline
+
+      # Kafka (set both for safety)
       KAFKA_BROKERS: kafka:9092
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+      # Restate
       RESTATE_RUNTIME_URL: http://restate:8080
-      SECRET_KEY: xnd_development_NnaKKIesgUACmzR4qUGekPA0y51KIjPmRfWZOaEjXezBAeyje6q6sC03Fb50XW8
-      XENDIT_SECRET_KEY: xnd_development_NnaKKIesgUACmzR4qUGekPA0y51KIjPmRfWZOaEjXezBAeyje6q6sC03Fb50XW8
-      XENDIT_CALLBACK_TOKEN: MAUJPZibkIPApduvaWV0DtsRbcfAFJJ62VuPl43Hi7FS4cWB
-      XENDIT_SUCCESS_URL: https://missy-internarial-rubye.ngrok-free.dev/
-      XENDIT_FAILURE_URL: https://missy-internarial-rubye.ngrok-free.dev/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      OTEL_RESOURCE_ATTRIBUTES: service.name=order-processing-pipeline
-      OTEL_SERVICE_NAME: order-processing-pipeline
-      OTEL_LOG_LEVEL: debug
-      WEB_DIR: /app/web
+
+      # SMTP
       SMTP_HOST: mailhog
       SMTP_PORT: 1025
-      SMTP_FROM: "noreply@example.test"
-      SMTP_TLS: "false"    
 
-    depends_on:
-      - postgres
-      - kafka
-      - restate
-      
+      # Web UI inside image
+      WEB_DIR: /app/web
+
+      # OTLP to Jaeger (avoid localhost inside container)
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: order-processing-pipeline
+      OTEL_RESOURCE_ATTRIBUTES: service.name=order-processing-pipeline
+      OTEL_LOG_LEVEL: debug
+
+  # ---- optional: email worker ----
   emailworker:
-    image: order-processing-pipeline:dev
-    entrypoint: ["/app/emailworker"] 
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-67e4a4a
+    container_name: emailworker
+    entrypoint: ["/app/emailworker"]
     depends_on:
-      - kafka
-      - mailhog
-      - postgres
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      KAFKA_BROKERS: kafka:9092     # already good
-      SMTP_HOST: mailhog
-      SMTP_PORT: "1025"
-      SMTP_FROM: "noreply@example.test"
-      SMTP_TLS: "false"
-      # add DB env so it doesn't try localhost
+      KAFKA_BROKERS: kafka:9092
       ORDER_DB_HOST: postgres
       ORDER_DB_PORT: 5432
       ORDER_DB_USER: orderpipelineadmin
       ORDER_DB_PASSWORD: postgres
       ORDER_DB_NAME: orderpipeline
-      OTEL_SERVICE_NAME: emailworker
-      OTEL_RESOURCE_ATTRIBUTES: service.name=emailworker
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+
+      # Tracing for the worker
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: http/protobuf
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: emailworker
+      OTEL_RESOURCE_ATTRIBUTES: service.name=emailworker
       OTEL_LOG_LEVEL: debug
-    restart: unless-stopped
+
+  # ---- one-shot: auto-register via Restate CLI ----
+  restate-registrar:
+    image: restatedev/restate:latest
+    container_name: restate-registrar
+    depends_on:
+      restate:
+        condition: service_started
+      app:
+        condition: service_started
+    environment:
+      RESTATE_ADMIN_URL: http://restate:9070
+    entrypoint: ["restate"]
+    command: ["deployments", "register", "http://app:9081", "--yes"]
+    restart: on-failure
 
 volumes:
   postgres_data:
-  jaeger_data:
