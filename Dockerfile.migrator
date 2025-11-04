@@ -10,7 +10,7 @@ RUN go install -tags 'postgres' -trimpath -ldflags="-s -w" \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 WORKDIR /migrator
-COPY migrations/ /migrations/
+COPY db/migrations/ /migrations/
 COPY --from=build /go/bin/migrate /usr/local/bin/migrate
 ENTRYPOINT ["/usr/local/bin/migrate"]
 CMD ["-help"]

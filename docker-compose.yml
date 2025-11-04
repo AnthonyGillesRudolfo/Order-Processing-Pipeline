@@ -67,12 +67,25 @@ services:
   # ---- runs ONCE, migrates schema, then exits ----
   migrator:
     image: ghcr.io/yourorg/order-processing-pipeline-migrator:latest
+    container_name: migrator
+    build:
+      context: .
+      dockerfile: Dockerfile.migrator
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DB_URL: postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable
-    entrypoint: ["/bin/sh","-lc","/usr/local/bin/migrate -path /migrations -database \"$${DB_URL}\" up"]
+    entrypoint: ["/bin/sh","-lc"]
+    command: |
+      echo "Running migrations against $$DB_URL";
+      out=$(/usr/local/bin/migrate -verbose -path /migrations -database "$$DB_URL" up 2>&1) || rc=$$?;
+      printf "%s\n" "$$out";
+      if [ "${rc:-0}" -ne 0 ]; then
+        echo "migrate failed with ${rc:-0}";
+        echo "$$out" | grep -qi 'no change' && { echo "No change detected; success."; exit 0; };
+        exit "${rc}";
+      fi
     restart: "no"
 
   # ---- your application ----
@@ -165,6 +178,41 @@ services:
     entrypoint: ["restate"]
     command: ["deployments", "register", "http://app:9081", "--yes"]
     restart: on-failure
+
+  # ---- MCP server (runs tools for agents/clients) ----
+  mcp:
+    image: python:3.12-slim
+    container_name: mcp
+    working_dir: /srv
+    volumes:
+      - ./mcp-server:/srv:ro
+    environment:
+      # Point to in-cluster services
+      RESTATE_RUNTIME_URL: http://restate:8080
+      AP2_BASE: http://app:3000
+      # Telemetry to in-cluster Jaeger (HTTP exporter)
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: mcp-server
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      restate:
+        condition: service_started
+      app:
+        condition: service_started
+      jaeger:
+        condition: service_started
+    entrypoint: ["/bin/sh","-lc"]
+    command:
+      - |
+        pip install --no-cache-dir \
+          mcp \
+          httpx \
+          opentelemetry-api \
+          opentelemetry-sdk \
+          opentelemetry-exporter-otlp-proto-http \
+          opentelemetry-instrumentation-httpx \
+        && python /srv/main.py
+    restart: unless-stopped
 
 volumes:
   postgres_data:
