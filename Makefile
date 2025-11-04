@@ -1,6 +1,6 @@
 MODULE := $(shell go list -m)
 
-.PHONY: buf-lint buf-generate buf-breaking proto proto-check-clean run migrate-up migrate-down db-env migrate-create migrate-up-cli migrate-down-cli migrate-force
+.PHONY: buf-lint buf-generate buf-breaking proto proto-check-clean run migrate-up migrate-down db-env migrate-create migrate-up-cli migrate-down-cli migrate-force openbao-bootstrap
 
 BUF_CACHE_DIR ?= .bufcache
 
@@ -75,3 +75,6 @@ migrate-down-cli:
 migrate-force:
 	@[ -n "$(version)" ] || (echo "Usage: make migrate-force version=NNN" && exit 1)
 	@migrate -path db/migrations -database "$(MIGRATE_DSN)" force $(version)
+
+openbao-bootstrap:
+	./scripts/bootstrap_openbao.sh

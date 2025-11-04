@@ -90,7 +90,22 @@ XENDIT_FAILURE_URL=https://your-ngrok-url.ngrok-free.dev
 
 # Restate Runtime
 RESTATE_RUNTIME_URL=http://127.0.0.1:8080
+
+# OpenBao (dev optional)
+OPENBAO_ADDR=http://127.0.0.1:8200
+OPENBAO_TOKEN=dev-root-token
+OPENBAO_SECRET_PATH=order-processing/dev
 ```
+
+## 🔐 Secrets Management with OpenBao (Dev)
+
+Leverage [OpenBao](https://openbao.org/) to keep development secrets out of source-controlled manifests:
+
+1. **Start the service:** `docker compose up -d openbao`
+2. **Seed defaults:** `make openbao-bootstrap`
+3. **Run apps:** the Go binaries call OpenBao to populate environment variables before reading any other config. If OpenBao is unavailable, the existing `.env` values remain in effect.
+
+Customize `scripts/bootstrap_openbao.sh` to add more paths or rotate secrets as needed.
 
 ## 🚨 Troubleshooting
 

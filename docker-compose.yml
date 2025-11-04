@@ -62,6 +62,19 @@ services:
       - "4317:4317"
       - "4318:4318"
 
+  openbao:
+    image: quay.io/openbao/openbao:latest
+    container_name: openbao
+    command: server -dev -dev-root-token-id=dev-root-token -dev-listen-address=0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    environment:
+      OPENBAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      OPENBAO_DEV_ROOT_TOKEN_ID: dev-root-token
+    restart: unless-stopped
+    volumes:
+      - openbao_data:/openbao/data
+
   app:
     build: .
     image: order-processing-pipeline:dev
@@ -81,8 +94,8 @@ services:
       SECRET_KEY: xnd_development_NnaKKIesgUACmzR4qUGekPA0y51KIjPmRfWZOaEjXezBAeyje6q6sC03Fb50XW8
       XENDIT_SECRET_KEY: xnd_development_NnaKKIesgUACmzR4qUGekPA0y51KIjPmRfWZOaEjXezBAeyje6q6sC03Fb50XW8
       XENDIT_CALLBACK_TOKEN: MAUJPZibkIPApduvaWV0DtsRbcfAFJJ62VuPl43Hi7FS4cWB
-      XENDIT_SUCCESS_URL: https://missy-internarial-rubye.ngrok-free.dev/
-      XENDIT_FAILURE_URL: https://missy-internarial-rubye.ngrok-free.dev/
+      XENDIT_SUCCESS_URL: https://yeastlike-darron-definitely.ngrok-free.dev/ 
+      XENDIT_FAILURE_URL: https://yeastlike-darron-definitely.ngrok-free.dev/ 
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
@@ -94,11 +107,15 @@ services:
       SMTP_PORT: 1025
       SMTP_FROM: "noreply@example.test"
       SMTP_TLS: "false"    
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_TOKEN: dev-root-token
+      OPENBAO_SECRET_PATH: order-processing/dev
 
     depends_on:
       - postgres
       - kafka
       - restate
+      - openbao
       
   emailworker:
     image: order-processing-pipeline:dev
@@ -126,8 +143,12 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
       OTEL_LOG_LEVEL: debug
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_TOKEN: dev-root-token
+      OPENBAO_SECRET_PATH: order-processing/dev
     restart: unless-stopped
 
 volumes:
   postgres_data:
   jaeger_data:
+  openbao_data:

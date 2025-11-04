@@ -17,6 +17,57 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+class OpenBaoSecretNotFound(RuntimeError):
+    """Raised when the requested OpenBao path does not exist."""
+
+
+def _bootstrap_from_openbao() -> None:
+    """
+    Fetch secrets from an OpenBao KV v2 path (if configured) and load them into the environment.
+
+    Mirrors the Go helpers so local tooling can rely on the same source of truth.
+    """
+
+    addr = (os.getenv("OPENBAO_ADDR") or "http://127.0.0.1:8200").strip().rstrip("/")
+    token = os.getenv("OPENBAO_TOKEN") or "dev-root-token"
+    secret_path = (os.getenv("OPENBAO_SECRET_PATH") or "order-processing/dev").strip().strip("/")
+
+    if not (addr and token and secret_path):
+        return
+
+    mount = (os.getenv("OPENBAO_MOUNT") or "secret").strip().strip("/")
+    namespace = (os.getenv("OPENBAO_NAMESPACE") or "").strip()
+
+    url = f"{addr}/v1/{mount}/data/{secret_path}"
+    headers = {"X-Vault-Token": token}
+    if namespace:
+        headers["X-Vault-Namespace"] = namespace
+
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"call OpenBao at {url} failed: {exc}") from exc
+
+    if response.status_code == 404:
+        raise OpenBaoSecretNotFound(f"OpenBao path not found: {mount}/data/{secret_path}")
+    response.raise_for_status()
+
+    payload = response.json()
+    data = payload.get("data", {}).get("data", {})
+    for key, value in data.items():
+        if isinstance(value, (dict, list)):
+            continue  # keep behaviour simple; only flat envs are expected
+        os.environ[key] = str(value)
+
+
+try:
+    _bootstrap_from_openbao()
+except OpenBaoSecretNotFound as exc:
+    print(f"[OpenBao] {exc}", file=sys.stderr)
+except RuntimeError as exc:
+    print(f"[OpenBao] bootstrap failed: {exc}", file=sys.stderr)
+
+
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m2:free")
 API_KEY = os.getenv("OPENROUTER_API_KEY")

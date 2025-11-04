@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/config"
 	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/email"
 	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/events"
+	internalsecrets "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/secrets"
 )
 
 func newWorkerLogger(cfg appconfig.Config) *log.Logger {
@@ -174,6 +175,10 @@ func toFloat(v interface{}) float64 {
 
 func main() {
 	_ = godotenv.Load()
+
+	if err := internalsecrets.BootstrapFromOpenBao(context.Background()); err != nil && !errors.Is(err, internalsecrets.ErrOpenBaoSecretNotFound) {
+		log.Printf("OpenBao bootstrap failed: %v", err)
+	}
 
 	app := fx.New(
 		fx.Provide(
