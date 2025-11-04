@@ -66,7 +66,7 @@ services:
 
   # ---- runs ONCE, migrates schema, then exits ----
   migrator:
-    image: ghcr.io/yourorg/order-processing-pipeline-migrator:latest
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline-migrator:latest
     container_name: migrator
     build:
       context: .
