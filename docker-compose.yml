@@ -66,7 +66,7 @@ services:
 
   # ---- runs ONCE, migrates schema, then exits ----
   migrator:
-    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline-migrator:latest
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-393406f
     container_name: migrator
     build:
       context: .
@@ -81,16 +81,20 @@ services:
       echo "Running migrations against $$DB_URL";
       out=$(/usr/local/bin/migrate -verbose -path /migrations -database "$$DB_URL" up 2>&1) || rc=$$?;
       printf "%s\n" "$$out";
-      if [ "${rc:-0}" -ne 0 ]; then
-        echo "migrate failed with ${rc:-0}";
+      if [ "$${rc:-0}" -ne 0 ]; then
+        echo "migrate failed with $${rc:-0}";
         echo "$$out" | grep -qi 'no change' && { echo "No change detected; success."; exit 0; };
-        exit "${rc}";
+        exit "$${rc}";
       fi
     restart: "no"
 
   # ---- your application ----
   app:
-    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-67e4a4a
+    image: order-processing-pipeline:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: app
     ports:
       - "3000:3000"  # Web UI
@@ -136,10 +140,16 @@ services:
 
   # ---- optional: email worker ----
   emailworker:
-    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-67e4a4a
+    image: order-processing-pipeline:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: emailworker
     entrypoint: ["/app/emailworker"]
     depends_on:
+      app:
+        condition: service_started
       migrator:
         condition: service_completed_successfully
       kafka:
