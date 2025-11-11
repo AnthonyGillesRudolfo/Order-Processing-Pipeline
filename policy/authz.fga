@@ -1,0 +1,34 @@
+model
+  schema 1.1
+
+type user
+type group
+  relations
+    define member: [user]
+
+type org
+  relations
+    define admin:    [user, group#member]
+    define merchant: [user, group#member]
+    define agent:    [user, group#member]
+    define customer: [user, group#member]
+
+type store
+  relations
+    define org: [org]
+    define admin:    admin from org
+    define merchant: merchant from org
+    define agent:    agent from org
+    define viewer:   admin or merchant or agent
+
+type order
+  relations
+    define buyer: [user]
+    define store: [store]
+    define admin:    admin from store
+    define merchant: merchant from store
+    define agent:    agent from store
+    define owner: buyer
+    define viewer: owner or admin or merchant or agent
+    define can_refund: admin or merchant
+
