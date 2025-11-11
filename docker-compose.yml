@@ -138,6 +138,12 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: service.name=order-processing-pipeline
       OTEL_LOG_LEVEL: debug
 
+      # Authz (OpenFGA)
+      OPENFGA_API_URL: http://openfga:8080
+      OPENFGA_STORE_ID: ${OPENFGA_STORE_ID:-}
+      # Provide your store id (created after loading the model)
+      # OPENFGA_STORE_ID: ""
+
   # ---- optional: email worker ----
   emailworker:
     image: order-processing-pipeline:local
@@ -189,6 +195,32 @@ services:
     command: ["deployments", "register", "http://app:9081", "--yes"]
     restart: on-failure
 
+  # ---- OpenFGA authorization service (in-memory datastore) ----
+  openfga:
+    image: openfga/openfga:latest
+    container_name: openfga
+    profiles: ["openfga"]
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: memory   # for dev. Use postgres in prod.
+    ports:
+      - "8081:8080"                      # avoid clashing with Restate’s 8080
+    restart: unless-stopped
+
+  openfga-playground:
+    image: ghcr.io/openfga/playground:latest
+    container_name: openfga-playground
+    profiles: ["openfga"]
+    environment:
+      # Point the UI to the in-cluster OpenFGA API (not localhost)
+      OPENFGA_API_URL: http://openfga:8080
+      FGA_API_URL: http://openfga:8080
+      NEXT_PUBLIC_OPENFGA_API_URL: http://openfga:8080
+      NEXT_PUBLIC_FGA_API_URL: http://openfga:8080
+    depends_on:
+      - openfga
+    ports:
+      - "3001:3000"
   # ---- MCP server (runs tools for agents/clients) ----
   mcp:
     image: python:3.12-slim

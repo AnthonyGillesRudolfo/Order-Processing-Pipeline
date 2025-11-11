@@ -22,16 +22,17 @@ func RegisterOrdersRoutes(mux *http.ServeMux, repo *postgres.Repository) {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
             return
         }
-        handleOrdersList(repo, w, r)
+        HandleOrdersList(repo, w, r)
     }), "orders-list"))
 
     // /api/orders/* → individual + actions
     mux.Handle("/api/orders/", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        handleOrders(repo, w, r)
+        HandleOrders(repo, w, r)
     }), "orders"))
 }
 
-func handleOrdersList(repo *postgres.Repository, w http.ResponseWriter, r *http.Request) {
+// HandleOrdersList serves GET /api/orders
+func HandleOrdersList(repo *postgres.Repository, w http.ResponseWriter, r *http.Request) {
     if repo == nil || repo.DB == nil {
         http.Error(w, "db unavailable", http.StatusInternalServerError)
         return
@@ -89,7 +90,8 @@ func handleOrdersList(repo *postgres.Repository, w http.ResponseWriter, r *http.
     _ = json.NewEncoder(w).Encode(map[string]any{"orders": list})
 }
 
-func handleOrders(repo *postgres.Repository, w http.ResponseWriter, r *http.Request) {
+// HandleOrders exposes order-level actions and details under /api/orders/*
+func HandleOrders(repo *postgres.Repository, w http.ResponseWriter, r *http.Request) {
     path := strings.TrimPrefix(r.URL.Path, "/api/orders/")
     if path == "" {
         http.Error(w, "order id required", http.StatusBadRequest)
@@ -167,6 +169,36 @@ func handleOrders(repo *postgres.Repository, w http.ResponseWriter, r *http.Requ
         }
         w.Header().Set("Content-Type", "application/json")
         _ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Order confirmed successfully"})
+        return
+    }
+
+    // Refund (secure via authz middleware at registration)
+    if strings.HasSuffix(path, "/refund") && r.Method == http.MethodPost {
+        orderID := strings.TrimSuffix(path, "/refund")
+        // Lookup payment + amount
+        info, err := repo.GetOrderWithPayment(orderID)
+        if err != nil {
+            http.Error(w, "order not found", http.StatusNotFound)
+            return
+        }
+        ord, _ := info["order"].(map[string]any)
+        payID := toString(ord["payment_id"])
+        amount := toFloat(ord["total_amount"])
+        if payID == "" {
+            http.Error(w, "payment not found for order", http.StatusBadRequest)
+            return
+        }
+        runtimeURL := getenv("RESTATE_RUNTIME_URL", "http://127.0.0.1:8080")
+        url := fmt.Sprintf("%s/order.sv1.PaymentService/%s/ProcessRefund", runtimeURL, payID)
+        body := map[string]any{"payment_id": payID, "order_id": orderID, "amount": amount, "reason": "manual_refund"}
+        if err := postJSON(url, body); err != nil {
+            w.Header().Set("Content-Type", "application/json")
+            w.WriteHeader(http.StatusBadGateway)
+            _ = json.NewEncoder(w).Encode(map[string]any{"error": "failed to process refund", "detail": err.Error()})
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        _ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
         return
     }
 
@@ -262,3 +294,22 @@ func postJSON(url string, body map[string]any) error {
 // order details helper removed in favor of postgres.GetOrderWithPayment
 
 func getenv(k, d string) string { if v := os.Getenv(k); v != "" { return v }; return d }
+
+// local helpers
+func toString(v interface{}) string {
+    if s, ok := v.(string); ok { return s }
+    return ""
+}
+
+func toFloat(v interface{}) float64 {
+    switch t := v.(type) {
+    case float64:
+        return t
+    case float32:
+        return float64(t)
+    case int:
+        return float64(t)
+    default:
+        return 0
+    }
+}

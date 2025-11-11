@@ -14,7 +14,8 @@ COPY . .
 
 # Build binaries
 RUN go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server \
- && go build -trimpath -ldflags="-s -w" -o /out/emailworker ./cmd/emailworker
+ && go build -trimpath -ldflags="-s -w" -o /out/emailworker ./cmd/emailworker \
+ && go build -trimpath -ldflags="-s -w" -o /out/seed-authz ./cmd/seed-authz
 
 ## --- Minimal runtime image ---
 FROM alpine:3.20
@@ -24,6 +25,7 @@ WORKDIR /app
 # App binaries
 COPY --from=build /out/server /app/server
 COPY --from=build /out/emailworker /app/emailworker
+COPY --from=build /out/seed-authz /app/seed-authz
 
 # Static web assets used by the Web UI
 COPY web/ /app/web/
