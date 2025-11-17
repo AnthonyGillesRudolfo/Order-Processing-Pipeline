@@ -89,6 +89,9 @@ Application Startup
 # Navigate to project directory
 cd /path/to/Order-Processing-Pipeline
 
+# create data/raft
+mkdir -p data/raft
+
 # Start all services
 docker compose up -d
 ```
