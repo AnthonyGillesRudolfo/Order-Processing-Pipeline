@@ -1,4 +1,24 @@
 services:
+  # ---- OpenBao Secret Management ----
+  openbao:
+    image: openbao/openbao:2.1.0
+    container_name: openbao
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./config.hcl:/vault/config/config.hcl:ro
+      - ./data:/vault/data
+    command: server -config=/vault/config/config.hcl
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8200/v1/sys/health?standbyok=true"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -100,6 +120,8 @@ services:
       - "3000:3000"  # Web UI
       - "9081:9081"  # Restate server
     depends_on:
+      openbao:
+        condition: service_healthy
       migrator:
         condition: service_completed_successfully
       kafka:
@@ -109,11 +131,18 @@ services:
       jaeger:
         condition: service_started
     environment:
+      # OpenBao Configuration
+      # IMPORTANT: Replace BAO_ROLE_ID and BAO_SECRET_ID with your actual credentials
+      # obtained from running ./scripts/init_openbao_docker.sh
+      VAULT_ADDR: http://openbao:8200
+      BAO_ROLE_ID: ${BAO_ROLE_ID:-}
+      BAO_SECRET_ID: ${BAO_SECRET_ID:-}
+
       # Postgres
       ORDER_DB_HOST: postgres
       ORDER_DB_PORT: 5432
       ORDER_DB_USER: orderpipelineadmin
-      ORDER_DB_PASSWORD: postgres
+      # ORDER_DB_PASSWORD is fetched from OpenBao at runtime
       ORDER_DB_NAME: orderpipeline
 
       # Kafka (set both for safety)
@@ -141,8 +170,10 @@ services:
       # Authz (OpenFGA)
       OPENFGA_API_URL: http://openfga:8080
       OPENFGA_STORE_ID: ${OPENFGA_STORE_ID:-}
-      # Provide your store id (created after loading the model)
-      # OPENFGA_STORE_ID: ""
+
+      # Xendit URLs (non-secret)
+      XENDIT_SUCCESS_URL: ${XENDIT_SUCCESS_URL:-}
+      XENDIT_FAILURE_URL: ${XENDIT_FAILURE_URL:-}
 
   # ---- optional: email worker ----
   emailworker:
@@ -154,6 +185,8 @@ services:
     container_name: emailworker
     entrypoint: ["/app/emailworker"]
     depends_on:
+      openbao:
+        condition: service_healthy
       app:
         condition: service_started
       migrator:
@@ -163,12 +196,22 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # OpenBao Configuration
+      VAULT_ADDR: http://openbao:8200
+      BAO_ROLE_ID: ${BAO_ROLE_ID:-}
+      BAO_SECRET_ID: ${BAO_SECRET_ID:-}
+
+      # Kafka
       KAFKA_BROKERS: kafka:9092
+      
+      # Postgres
       ORDER_DB_HOST: postgres
       ORDER_DB_PORT: 5432
       ORDER_DB_USER: orderpipelineadmin
-      ORDER_DB_PASSWORD: postgres
+      # ORDER_DB_PASSWORD is fetched from OpenBao at runtime
       ORDER_DB_NAME: orderpipeline
+      
+      # SMTP
       SMTP_HOST: mailhog
       SMTP_PORT: "1025"
 

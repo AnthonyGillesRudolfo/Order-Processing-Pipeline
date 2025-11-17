@@ -3,6 +3,7 @@ order-processing-pipeline
 server
 *.exe
 *.out
+emailworker
 
 # Go build cache
 bin/
@@ -10,6 +11,10 @@ build/
 
 # Env & secrets
 .env
+.bao.env
+openbao-credentials.txt
+*.credentials.txt
+init.txt
 
 # Logs and caches
 server.log
