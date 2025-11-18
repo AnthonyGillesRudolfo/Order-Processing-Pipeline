@@ -1,15 +1,15 @@
-# Order Processing Pipeline - Complete Deployment Guide
+# Order Processing Pipeline - Deployment Guide
 
-This guide will walk you through running the entire Order Processing Pipeline with OpenBao secret management, OpenFGA authorization, and all supporting services.
+Complete guide for running the Order Processing Pipeline with OpenBao secret management and OpenFGA authorization.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
-- [Architecture Overview](#architecture-overview)
 - [Quick Start](#quick-start)
-- [Detailed Setup](#detailed-setup)
-- [Initial OpenBao Setup (First-Time Only)](#initial-openbao-setup-first-time-only)
+- [First-Time Setup](#first-time-setup)
+- [Daily Operations](#daily-operations)
 - [Verification](#verification)
 - [Troubleshooting](#troubleshooting)
+- [Reference](#reference)
 
 ---
 
@@ -17,661 +17,261 @@ This guide will walk you through running the entire Order Processing Pipeline wi
 
 ### Required Software
 - **Docker Desktop**: Latest version
-- **Docker Compose**: v2.0 or higher
-- **Homebrew** (macOS): For installing CLI tools
-- **ngrok** (optional): For Xendit webhook testing
+- **Docker Compose**: v2.0+
+- **Homebrew** (macOS): For CLI tools
 
-### Required CLI Tools
+### Install CLI Tools
 ```bash
-# Install OpenBao CLI
-brew install openbao/tap/fga
+# OpenFGA CLI (for authorization model management)
+brew install openfga/tap/fga
 
-# Install ngrok (optional, for payment webhooks)
+# ngrok (optional, for Xendit webhook testing)
 brew install ngrok
-```
-
-### Environment Files
-Ensure you have these files in your project root:
-- `.env` - Main environment configuration
-- `.bao.env` - OpenBao AppRole credentials (if exists)
-- `init.txt` - OpenBao unseal keys and root token (if exists)
-
----
-
-## Architecture Overview
-
-### Services Stack
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Docker Compose Stack                  │
-├─────────────────────────────────────────────────────────┤
-│ • openbao       - Secret Management (port 8200)         │
-│ • postgres      - Database (port 5432)                  │
-│ • kafka         - Message Queue (port 9092)             │
-│ • restate       - Workflow Engine (port 8080)           │
-│ • jaeger        - Observability (port 16686)            │
-│ • mailhog       - Email Testing (port 8025)             │
-│ • openfga       - Authorization (port 8081)             │
-│ • app           - Main Application (port 3000)          │
-│ • emailworker   - Email Worker                          │
-│ • mcp           - Model Context Protocol                │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Secret Management Flow
-```
-Application Startup
-        ↓
-    config.Load()
-        ↓
-  ┌─────────────────┐
-  │ Try OpenBao     │ ←── BAO_ROLE_ID + BAO_SECRET_ID
-  └────────┬────────┘
-           │
-    ┌──────┴───────┐
-    │  Success?    │
-    └──┬───────┬───┘
-  Yes  │       │  No
-       │       │
-       ↓       ↓
-  ✅ Load   ⚠️ Fallback
-  Secrets   to .env
-  from      variables
-  OpenBao
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Start All Services
-```bash
-# Navigate to project directory
-cd /path/to/Order-Processing-Pipeline
-
-# create data/raft
-mkdir -p data/raft
-
-# Start all services
-docker compose up -d
-```
-
-### 2. Initialize and Unseal OpenBao
-
-#### First-Time Setup: Initialize OpenBao (Only if `init.txt` doesn't exist)
-
-If you're setting up OpenBao for the first time, you need to initialize it:
+**For existing setups with `init.txt` and `.env` configured:**
 
 ```bash
-# Check if OpenBao is already initialized
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
+# 1. Start all services
+docker compose --profile openfga up -d
 
-# If it shows "Error initializing: Vault is not initialized", then initialize:
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator init \
-  -key-shares=3 \
-  -key-threshold=2 \
-  > init.txt
-
-# IMPORTANT: Save init.txt securely! It contains:
-# - 3 unseal keys (you need any 2 to unseal)
-# - Root token (for admin operations)
-```
-
-After initialization, you'll need to:
-1. Create the AppRole for application authentication
-2. Store secrets in OpenBao
-
-**See the [Initial OpenBao Setup](#initial-openbao-setup-first-time-only) section below for complete first-time setup instructions.**
-
-#### Regular Operation: Unseal OpenBao (Required after every restart)
-
-OpenBao seals itself on every restart for security. You must unseal it before the app can access secrets.
-
-```bash
-# Method 1: Using the unseal script
+# 2. Unseal OpenBao (required after every restart)
 ./scripts/unseal_openbao.sh
 
-# Method 2: Manual unseal with both keys
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal 7HAjrGorV1AQ6C94r1QPYPLZ5Qoh48sZGcgE+Z2e/+x6
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal Di28RncdsWKvVeokCbr1BXndlFnIWMrG/+nO2DNOY9//
+# 3. Access the application
+open http://localhost:3000
 ```
 
-**Note**: The keys shown above are from the existing `init.txt`. If you initialized OpenBao yourself, use the keys from your own `init.txt` file.
-
-### 3. Restart Application
-After unsealing OpenBao, restart the app to load secrets:
-
-```bash
-docker compose restart app emailworker
-```
-
-### 4. Access the Application
-- **Web UI**: http://localhost:3000
-- **Jaeger Tracing**: http://localhost:16686
-- **MailHog**: http://localhost:8025
-- **OpenFGA Playground**: http://localhost:3001/playground
+**That's it!** Skip to [Verification](#verification) to test the system.
 
 ---
 
-## Detailed Setup
+## First-Time Setup
 
-### Step 1: Environment Configuration
+**Complete these steps only once when setting up the system from scratch.**
 
-#### Check `.env` File
-Ensure these variables are set in your `.env` file:
+### Step 1: Create Data Directory
 
 ```bash
-# OpenBao Configuration
-BAO_ROLE_ID=beb28548-e26f-a60a-9f53-fe7b0b14b6d2
-BAO_SECRET_ID=d7c5808a-6d24-d58f-eb42-23322e2634f6
+mkdir -p data/raft
+```
 
-# OpenFGA Configuration
+### Step 2: Create Environment File
+
+```bash
+# Copy example file
+cp .env.example .env
+
+# Edit .env and add these placeholders (we'll fill them later)
+cat >> .env << 'EOF'
+# OpenBao AppRole (will be generated in next steps)
+BAO_ROLE_ID=
+BAO_SECRET_ID=
+
+# OpenFGA (use the default store ID)
 OPENFGA_STORE_ID=01K9VA0NN6ZMTZ0AW0783K4B72
 
-# Xendit Configuration (non-secret)
+# Xendit (non-secret URLs)
 XENDIT_SUCCESS_URL=http://localhost:3000
 XENDIT_FAILURE_URL=http://localhost:3000
 
-# Database Configuration
+# Database
 ORDER_DB_PASSWORD=postgres
-
-# Note: XENDIT_SECRET_KEY, XENDIT_CALLBACK_TOKEN, OPENROUTER_API_KEY 
-# are now stored in OpenBao and loaded at runtime
+EOF
 ```
 
-### Step 2: Start Infrastructure Services
+### Step 3: Start PostgreSQL (Required for Next Steps)
 
 ```bash
-# Start services in order
-docker compose up -d postgres kafka openbao openfga restate jaeger mailhog
-
-# Wait for services to be healthy (about 10 seconds)
-sleep 10
-
-# Check service health
-docker compose ps
-```
-
-Expected output:
-```
-NAME        STATUS                    PORTS
-postgres    Up (healthy)             0.0.0.0:5432->5432/tcp
-kafka       Up                       0.0.0.0:9092->9092/tcp
-openbao     Up (healthy)             0.0.0.0:8200->8200/tcp
-openfga     Up                       0.0.0.0:8080-8081->8080-8081/tcp
-restate     Up                       0.0.0.0:8080->8080/tcp
-jaeger      Up                       0.0.0.0:16686->16686/tcp
-mailhog     Up                       0.0.0.0:8025->8025/tcp
-```
-
-### Step 3: Initialize OpenBao Secrets
-
-#### Check OpenBao Status
-```bash
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
-```
-
-If it shows `Sealed: true`, unseal it:
-```bash
-# Unseal with key 1
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal 7HAjrGorV1AQ6C94r1QPYPLZ5Qoh48sZGcgE+Z2e/+x6
-
-# Unseal with key 2
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal Di28RncdsWKvVeokCbr1BXndlFnIWMrG/+nO2DNOY9//
-```
-
-#### Verify Secrets Exist
-```bash
-# Set token for CLI access
-export BAO_TOKEN=s.D3xErUZJKEc8o8qIFBJJnpo0
-
-# Check Xendit secrets
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
-  openbao bao kv get secret/myapp/xendit
-
-# Check Database password
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
-  openbao bao kv get secret/myapp/database
-
-# Check OpenRouter API key
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
-  openbao bao kv get secret/myapp/openrouter
-```
-
-### Step 4: Initialize OpenFGA Authorization
-
-#### Upload Authorization Model
-```bash
-# Install FGA CLI (if not already installed)
-brew install openfga/tap/fga
-
-# Upload the authorization model
-fga model write \
-  --store-id 01K9VA0NN6ZMTZ0AW0783K4B72 \
-  --api-url http://localhost:8081 \
-  --file policy/authz.fga
-```
-
-Expected output:
-```json
-{
-  "authorization_model_id":"01K9Y58VC4SM82FBGZWS6SQPQX"
-}
-```
-
-#### Seed Authorization Tuples
-```bash
-# Add user:bob as merchant of org:acme
-curl -X POST http://localhost:8081/stores/01K9VA0NN6ZMTZ0AW0783K4B72/write \
-  -H "Content-Type: application/json" \
-  -d '{
-    "writes": {
-      "tuple_keys": [
-        {"user": "user:bob", "relation": "merchant", "object": "org:acme"},
-        {"user": "org:acme", "relation": "org", "object": "store:merchant-001"},
-        {"user": "user:alice", "relation": "admin", "object": "org:acme"}
-      ]
-    }
-  }'
-```
-
-#### Verify Authorization
-```bash
-# Test: bob should have merchant access
-curl -X POST http://localhost:8081/stores/01K9VA0NN6ZMTZ0AW0783K4B72/check \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tuple_key": {
-      "user": "user:bob",
-      "relation": "merchant",
-      "object": "store:merchant-001"
-    }
-  }'
-```
-
-Expected: `{"allowed":true}`
-
-### Step 5: Run Database Migrations
-
-Migrations run automatically via the `migrator` service, but you can verify:
-
-```bash
-# Check migration logs
-docker logs migrator
-
-# Expected output should show:
-# "No change detected; success." or migration completed successfully
-```
-
-### Step 6: Start Application Services
-
-```bash
-# Start the application
-docker compose up -d app emailworker
-
-# Check logs for secret loading
-docker logs app 2>&1 | grep -i "secrets\|openbao"
-```
-
-Expected output:
-```
-✓ Secrets loaded successfully from OpenBao
-[Merchant m_001] Loaded 5 items from database
-```
-
-### Step 7: Register with Restate
-
-```bash
-# Register the Restate services
-docker exec restate restate deployments register http://app:9081
-
-# Verify registration
-docker exec restate restate deployments list
-```
-
-### Step 8: Setup ngrok (Optional - for Xendit webhooks)
-
-If you want to test real payment webhooks:
-
-```bash
-# Start ngrok
-ngrok http 3000
-
-# Copy the HTTPS URL (e.g., https://abc123.ngrok-free.app)
-# Update .env with the ngrok URL:
-XENDIT_SUCCESS_URL=https://your-ngrok-url.ngrok-free.app
-XENDIT_FAILURE_URL=https://your-ngrok-url.ngrok-free.app
-
-# Restart app to pick up new URLs
-docker compose restart app
-```
-
----
-
-## Verification
-
-### 1. Check All Services Running
-```bash
-docker compose ps
-```
-
-All services should show `Up` or `Up (healthy)` status.
-
-### 2. Test Web UI
-Open http://localhost:3000 in your browser. You should see:
-- Products loaded from database
-- AuthZ controls (role selector)
-- Basket and checkout functionality
-
-### 3. Test Authorization
-
-#### As Anonymous (No Access)
-```bash
-curl "http://localhost:3000/authz/check?object=store:merchant-001&relation=merchant&principal=user:anonymous"
-```
-Expected: `{"allowed":false}`
-
-#### As Bob (Merchant - Has Access)
-```bash
-curl "http://localhost:3000/authz/check?object=store:merchant-001&relation=merchant&principal=user:bob"
-```
-Expected: `{"allowed":true}`
-
-#### As Alice (Admin - No Merchant Access)
-```bash
-curl "http://localhost:3000/authz/check?object=store:merchant-001&relation=merchant&principal=user:alice"
-```
-Expected: `{"allowed":false}`
-
-### 4. Test Secret Loading
-
-#### Check App Uses OpenBao
-```bash
-docker logs app 2>&1 | grep "Secrets loaded"
-```
-Should show: `✓ Secrets loaded successfully from OpenBao`
-
-#### Test Database Connection
-```bash
-docker logs app 2>&1 | grep "database"
-```
-Should show: `Successfully connected to PostgreSQL database: orderpipeline`
-
-### 5. Test Order Flow
-
-#### Place an Order via UI
-1. Go to http://localhost:3000
-2. Select "Anonymous" role
-3. Add items to basket
-4. Click "Checkout"
-5. You'll be redirected to Xendit payment page
-6. Complete the payment (use test mode)
-7. After payment, you should be redirected back to the shop
-
-#### Check Order in Database
-```bash
-docker exec -e PGPASSWORD=postgres postgres psql -U orderpipelineadmin -d orderpipeline -c "SELECT id, customer_id, status, total_amount FROM orders ORDER BY updated_at DESC LIMIT 5;"
-```
-
----
-
-## Initial OpenBao Setup (First-Time Only)
-
-**Skip this section if you already have `init.txt` with unseal keys and root token.**
-
-If you're setting up OpenBao from scratch, follow these steps once:
-
-### 1. Initialize OpenBao
-
-```bash
-# Start OpenBao container
-docker compose up -d openbao
+# Start just PostgreSQL first
+docker compose up -d postgres
 
 # Wait for it to be ready
 sleep 5
-
-# Initialize with Shamir's Secret Sharing (3 keys, need 2 to unseal)
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator init \
-  -key-shares=3 \
-  -key-threshold=2 \
-  > init.txt
-
-# Display the initialization output
-cat init.txt
 ```
 
-You'll see output like:
+### Step 4: Initialize OpenBao
+
+```bash
+# Start OpenBao
+docker compose up -d openbao
+
+# Wait for it to be ready
+sleep 10
+
+# Initialize OpenBao (creates 3 unseal keys, needs 2 to unseal, and root token)
+./scripts/init_openbao_docker.sh
 ```
+
+**Output:**
+```
+✓ OpenBao initialized successfully
+========================================
+IMPORTANT: Save these credentials securely!
+========================================
 Unseal Key 1: <key1>
 Unseal Key 2: <key2>
 Unseal Key 3: <key3>
+Root Token:   <token>
+========================================
 
-Initial Root Token: s.<token>
+✓ Credentials saved to: ./init.txt
+⚠ Make sure this file is in .gitignore!
 
-Vault initialized with 3 key shares and a key threshold of 2.
+✓ OpenBao unsealed (2/2)
+✓ AppRole enabled
+✓ Policy created
+✓ AppRole created
+✓ AppRole credentials generated
+✓ KV v2 secrets engine ready
+✓ Default secrets stored successfully
+
+========================================
+Setup Complete!
+========================================
+
+✓ Secrets stored in OpenBao:
+  - secret/myapp/database
+  - secret/myapp/xendit (placeholder)
+  - secret/myapp/openrouter (placeholder)
+
+✓ AppRole created
+
+IMPORTANT: Save these credentials to .env:
+BAO_ROLE_ID=<role-id>
+BAO_SECRET_ID=<secret-id>
+
+Unseal keys saved to: init.txt
+⚠️  Keep init.txt secure! You need it to unseal OpenBao.
 ```
 
-**⚠️ CRITICAL**: Save `init.txt` securely! Without these keys, you cannot unseal OpenBao.
-
-### 2. Unseal OpenBao
+### Step 5: Update .env with AppRole Credentials
 
 ```bash
-# Extract keys from init.txt (or copy them manually)
-KEY1=$(grep "Unseal Key 1:" init.txt | awk '{print $NF}')
-KEY2=$(grep "Unseal Key 2:" init.txt | awk '{print $NF}')
-ROOT_TOKEN=$(grep "Initial Root Token:" init.txt | awk '{print $NF}')
+# Copy the BAO_ROLE_ID and BAO_SECRET_ID from the output above
+# Edit .env file manually or use sed:
 
-# Unseal with first key
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal $KEY1
+nano .env
 
-# Unseal with second key
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal $KEY2
-
-# Verify it's unsealed
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
+# Replace the empty values:
+# BAO_ROLE_ID=<paste-role-id-here>
+# BAO_SECRET_ID=<paste-secret-id-here>
 ```
 
-### 3. Enable KV v2 Secrets Engine
+### Step 6: Update API Keys in OpenBao (Optional)
+
+If you have real API keys, update them in OpenBao:
 
 ```bash
-# Login with root token
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao login $ROOT_TOKEN
+# Get root token from init.txt
+export BAO_TOKEN=$(grep "Initial Root Token:" init.txt | awk '{print $NF}')
 
-# Enable KV v2 secrets engine at "secret/"
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao secrets enable -version=2 -path=secret kv
-```
-
-### 4. Store Application Secrets
-
-```bash
-# Store Xendit secrets
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
+# Update Xendit secrets (replace with your actual keys)
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
   openbao bao kv put secret/myapp/xendit \
-  XENDIT_SECRET_KEY="your-xendit-secret-key" \
-  XENDIT_CALLBACK_TOKEN="your-xendit-callback-token"
+  XENDIT_SECRET_KEY="your-actual-xendit-secret-key" \
+  XENDIT_CALLBACK_TOKEN="your-actual-callback-token"
 
-# Store OpenRouter API key
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
+# Update OpenRouter API key (replace with your actual key)
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
   openbao bao kv put secret/myapp/openrouter \
-  OPENROUTER_API_KEY="your-openrouter-api-key"
-
-# Store database password
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao kv put secret/myapp/database \
-  ORDER_DB_PASSWORD="postgres"
+  OPENROUTER_API_KEY="your-actual-openrouter-api-key"
 ```
 
-### 5. Create AppRole for Application
+### Step 7: Setup OpenFGA Authorization
+
+OpenFGA requires:
+1. **PostgreSQL database** (`openfga`) - Created automatically by `openfga-migrator`
+2. **Authorization model** - Uploaded by `seed_openfga.sh`
+3. **Authorization tuples** (permissions) - Seeded by `seed_openfga.sh`
 
 ```bash
-# Enable AppRole auth method
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao auth enable approle
-
-# Create a policy for the app
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao policy write myapp-read - <<EOF
-path "secret/data/myapp/*" {
-  capabilities = ["read"]
-}
-EOF
-
-# Create the AppRole
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao write auth/approle/role/myapp \
-  token_policies="myapp-read" \
-  token_ttl=1h \
-  token_max_ttl=4h
-
-# Get Role ID
-ROLE_ID=$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao read -field=role_id auth/approle/role/myapp/role-id)
-
-# Generate Secret ID
-SECRET_ID=$(docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$ROOT_TOKEN \
-  openbao bao write -field=secret_id -f auth/approle/role/myapp/secret-id)
-
-# Display credentials
-echo "BAO_ROLE_ID=$ROLE_ID"
-echo "BAO_SECRET_ID=$SECRET_ID"
+# - Creates the 'openfga' database in PostgreSQL
+./script/setup_openfga_postgres.sh
+# This script does everything:
+# - Starts openfga-migrator (runs database migrations)
+# - Starts openfga service
+# - Uploads authorization model from policy/authz.fga
+# - Seeds user permissions (Bob, Alice, Anonymous)
+./scripts/seed_openfga.sh
 ```
 
-### 6. Update Environment Files
+**Output:**
+```
+======================================
+OpenFGA Setup with PostgreSQL
+======================================
 
-Add the AppRole credentials to your `.env` file:
+ℹ Checking OpenFGA database...
+✓ PostgreSQL is running
+✓ Database 'openfga' already exists
+
+ℹ Starting OpenFGA services...
+✓ Migrations completed successfully
+✓ OpenFGA is ready
+
+ℹ Verifying database tables...
+ Schema |        Name         | Type  |       Owner       
+--------+---------------------+-------+-------------------
+ public | authorization_model | table | orderpipelineadmin
+ public | store               | table | orderpipelineadmin
+ public | tuple               | table | orderpipelineadmin
+...
+
+ℹ Using store ID: 01K9VA0NN6ZMTZ0AW0783K4B72
+ℹ Uploading authorization model...
+✓ Authorization model uploaded
+ℹ Seeding authorization tuples...
+✓ Authorization tuples seeded
+ℹ Testing authorization...
+✓ Authorization test passed
+
+======================================
+OpenFGA Setup Complete!
+======================================
+
+✓ PostgreSQL database configured
+✓ OpenFGA tables migrated
+✓ Authorization model uploaded
+✓ User permissions seeded
+✓ Data persistence verified
+
+OpenFGA API: http://localhost:8081
+OpenFGA Playground: http://localhost:8081/playground
+```
+
+### Step 8: Start All Application Services
 
 ```bash
-# Add these lines to .env
-echo "BAO_ROLE_ID=$ROLE_ID" >> .env
-echo "BAO_SECRET_ID=$SECRET_ID" >> .env
+# Start all remaining services
+# This will:
+# - Start Kafka, Restate, Jaeger, MailHog
+# - Run 'migrator' (seeds merchant_items table)
+# - Start 'app' and 'emailworker'
+# - Auto-register app with Restate (via restate-registrar)
+docker compose --profile openfga up -d
 ```
 
-### 7. Update Unseal Script
+**What happens automatically:**
+1. **Infrastructure services** start (kafka, restate, jaeger, mailhog)
+2. **Database migrations** run (`migrator` container seeds products)
+3. **Application services** start (app, emailworker)
+4. **Restate registration** happens automatically (restate-registrar)
 
-Update `scripts/unseal_openbao.sh` with your unseal keys:
+Wait for all services to be ready (~15-30 seconds):
 
 ```bash
-#!/bin/bash
-# Replace these with your keys from init.txt
-KEY1="your-key-1"
-KEY2="your-key-2"
+# Check all services are running
+docker compose ps
 
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal $KEY1
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal $KEY2
+# You should see all services "Up" or "Up (healthy)"
 ```
 
-**First-time setup complete!** Now proceed to Step 3 in the Quick Start guide to restart your application.
-
----
-
-## Troubleshooting
-
-### Issue: OpenBao Sealed
-
-**Symptom**: App logs show "OpenBao unavailable"
-
-**Solution**:
-```bash
-# Check seal status
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
-
-# If sealed, unseal with both keys
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal 7HAjrGorV1AQ6C94r1QPYPLZ5Qoh48sZGcgE+Z2e/+x6
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal Di28RncdsWKvVeokCbr1BXndlFnIWMrG/+nO2DNOY9//
-
-# Restart app
-docker compose restart app
-```
-
-### Issue: Database Password Authentication Failed
-
-**Symptom**: App can't connect to database
-
-**Solution**:
-```bash
-# Check password in OpenBao
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=s.D3xErUZJKEc8o8qIFBJJnpo0 \
-  openbao bao kv get secret/myapp/database
-
-# Should show: ORDER_DB_PASSWORD: postgres
-# If different, update it:
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=s.D3xErUZJKEc8o8qIFBJJnpo0 \
-  openbao bao kv put secret/myapp/database ORDER_DB_PASSWORD=postgres
-
-# Restart app
-docker compose restart app
-```
-
-### Issue: Authorization Always Allows
-
-**Symptom**: All users can perform all actions
-
-**Solution**:
-```bash
-# Check OPENFGA_STORE_ID is set in app
-docker exec app sh -c 'echo $OPENFGA_STORE_ID'
-
-# Should output: 01K9VA0NN6ZMTZ0AW0783K4B72
-# If empty, check .env file and restart:
-docker compose restart app
-```
-
-### Issue: Products Empty
-
-**Symptom**: No products show in the UI
-
-**Solution**:
-```bash
-# Check database has data
-docker exec -e PGPASSWORD=postgres postgres psql -U orderpipelineadmin -d orderpipeline -c "SELECT COUNT(*) FROM merchant_items;"
-
-# If 0 rows, run migrations again
-docker compose restart migrator
-docker compose restart app
-```
-
-### Issue: Payment Redirect Shows "Method Not Allowed"
-
-**Symptom**: After payment, redirect fails
-
-**Solution**:
-```bash
-# Check XENDIT_SUCCESS_URL in .env points to shop, not webhook
-grep XENDIT_SUCCESS_URL .env
-
-# Should be: XENDIT_SUCCESS_URL=http://localhost:3000
-# NOT: XENDIT_SUCCESS_URL=http://localhost:3000/api/webhooks/xendit
-
-# Update and restart if needed
-docker compose restart app
-```
-
-### Issue: OpenFGA Errors - "No authorization model found"
-
-**Symptom**: OpenFGA logs show model errors
-
-**Solution**:
-```bash
-# Re-upload authorization model
-fga model write \
-  --store-id 01K9VA0NN6ZMTZ0AW0783K4B72 \
-  --api-url http://localhost:8081 \
-  --file policy/authz.fga
-
-# Reseed tuples
-curl -X POST http://localhost:8081/stores/01K9VA0NN6ZMTZ0AW0783K4B72/write \
-  -H "Content-Type: application/json" \
-  -d '{
-    "writes": {
-      "tuple_keys": [
-        {"user": "user:bob", "relation": "merchant", "object": "org:acme"},
-        {"user": "org:acme", "relation": "org", "object": "store:merchant-001"}
-      ]
-    }
-  }'
-```
+**First-time setup complete!** Proceed to [Verification](#verification).
 
 ---
 
@@ -680,159 +280,469 @@ curl -X POST http://localhost:8081/stores/01K9VA0NN6ZMTZ0AW0783K4B72/write \
 ### Starting the System
 
 ```bash
-# 1. Start all services
-docker compose up -d
+# 1. Start all services (including OpenFGA profile)
+docker compose --profile openfga up -d
 
-# 2. Unseal OpenBao (REQUIRED after every restart)
+# 2. Unseal OpenBao (NO LOGIN REQUIRED - app uses AppRole)
 ./scripts/unseal_openbao.sh
-# OR manually:
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal 7HAjrGorV1AQ6C94r1QPYPLZ5Qoh48sZGcgE+Z2e/+x6
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal Di28RncdsWKvVeokCbr1BXndlFnIWMrG/+nO2DNOY9//
 
-# 3. Restart app services
+# 3. Restart app to reconnect to unsealed OpenBao
+docker compose restart app emailworker
+```
+
+
+### Checking Service Status
+
+```bash
+# View all services
+docker compose ps
+
+# Check OpenBao status
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
+
+# Check OpenFGA status
+./scripts/check_openfga_status.sh
+
+# View logs
+docker compose logs -f app
+docker logs openbao
+docker logs openfga
+```
+
+### Common Tasks
+
+```bash
+# Restart application after code changes
 docker compose restart app emailworker
 
-# 4. Verify everything is running
+# Rebuild application image
+docker compose build app
+docker compose up -d app
+
+# Access application database
+docker exec -it -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d orderpipeline
+
+# Access OpenFGA database
+docker exec -it -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d openfga
+
+# View OpenBao secrets (requires root token from init.txt)
+export BAO_TOKEN=$(grep "Initial Root Token:" init.txt | awk '{print $NF}')
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
+  openbao bao kv get secret/myapp/xendit
+```
+
+---
+
+## Verification
+
+### 1. Check All Services Running
+
+```bash
 docker compose ps
-docker logs app 2>&1 | tail -20
 ```
 
-### Stopping the System
+Expected: All services show `Up` or `Up (healthy)`.
+
+### 2. Check OpenBao Unsealed
 
 ```bash
-# Graceful shutdown
-docker compose down
-
-# Remove volumes (WARNING: deletes all data)
-docker compose down -v
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
 ```
 
-### Viewing Logs
+Expected: `Sealed: false`
+
+### 3. Test Web UI
 
 ```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker logs -f app
-docker logs -f openbao
-docker logs -f openfga
-
-# Search logs
-docker logs app 2>&1 | grep -i "error\|secret"
+open http://localhost:3000
 ```
 
-### Accessing Services
+You should see:
+- ✅ Products loaded from database
+- ✅ Role selector (Anonymous/Bob/Alice)
+- ✅ Shopping cart functionality
+
+### 4. Test Authorization
 
 ```bash
-# OpenBao CLI
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=s.D3xErUZJKEc8o8qIFBJJnpo0 openbao bao <command>
+# Bob (merchant) should have access
+curl "http://localhost:3000/authz/check?object=store:merchant-001&relation=merchant&principal=user:bob"
+# Expected: {"allowed":true}
 
-# PostgreSQL
-docker exec -it -e PGPASSWORD=postgres postgres psql -U orderpipelineadmin -d orderpipeline
+# Anonymous should NOT have access
+curl "http://localhost:3000/authz/check?object=store:merchant-001&relation=merchant&principal=user:anonymous"
+# Expected: {"allowed":false}
+```
 
-# App shell
-docker exec -it app sh
+### 5. Test Secret Loading from OpenBao
+
+```bash
+docker logs app 2>&1 | grep "Secrets loaded"
+# Expected: "✓ Secrets loaded successfully from OpenBao"
+```
+
+### 6. Test OpenFGA Persistence
+
+```bash
+# Check tuples are stored in PostgreSQL
+docker exec -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d openfga \
+  -c "SELECT COUNT(*) FROM tuple;"
+# Expected: 3 (or more)
+
+# Restart OpenFGA and verify data persists
+docker compose restart openfga
+sleep 5
+
+curl -X POST http://localhost:8081/stores/01K9VA0NN6ZMTZ0AW0783K4B72/check \
+  -H "Content-Type: application/json" \
+  -d '{"tuple_key":{"user":"user:bob","relation":"merchant","object":"store:merchant-001"}}'
+# Expected: {"allowed":true}
+```
+
+### 7. Access UIs
+
+- **Application**: http://localhost:3000
+- **Jaeger Tracing**: http://localhost:16686
+- **MailHog (Email)**: http://localhost:8025
+- **OpenFGA Playground**: http://localhost:8081/playground
+
+---
+
+## Troubleshooting
+
+### OpenBao Issues
+
+#### Error: "OpenBao unavailable" or "connection refused"
+
+```bash
+# Check if OpenBao container is running
+docker compose ps openbao
+
+# Check OpenBao status
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
+
+# If sealed, unseal it
+./scripts/unseal_openbao.sh
+
+# Restart app to reconnect
+docker compose restart app emailworker
+```
+
+#### Error: "permission denied" accessing secrets
+
+```bash
+# Verify AppRole credentials in .env
+grep BAO_ .env
+
+# Should show:
+# BAO_ROLE_ID=<uuid>
+# BAO_SECRET_ID=<uuid>
+
+# If missing or wrong, re-run initialization
+./scripts/init_openbao_docker.sh
+
+# Update .env with new credentials and restart
+docker compose restart app emailworker
+```
+
+#### App falls back to .env instead of using OpenBao
+
+```bash
+# This means OpenBao is sealed or unreachable
+# Check OpenBao status
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
+
+# If sealed: true, unseal it
+./scripts/unseal_openbao.sh
+
+# Restart app
+docker compose restart app emailworker
+
+# Check logs for "✓ Secrets loaded successfully from OpenBao"
+docker logs app 2>&1 | grep "Secrets"
+```
+
+### OpenFGA Issues
+
+#### Error: "No authorization model found"
+
+```bash
+# Re-upload authorization model and seed tuples
+./scripts/seed_openfga.sh
+```
+
+#### OpenFGA data lost after restart
+
+```bash
+# Check if using PostgreSQL (not in-memory)
+docker exec openfga env | grep DATASTORE_ENGINE
+# Expected: OPENFGA_DATASTORE_ENGINE=postgres
+
+# Check if tuples exist in database
+docker exec -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d openfga \
+  -c "SELECT COUNT(*) FROM tuple;"
+
+# If 0, re-seed
+./scripts/seed_openfga.sh
+```
+
+#### No tuples found (not seeded)
+
+```bash
+# Re-run the setup script
+./scripts/seed_openfga.sh
+```
+
+### Database Issues
+
+#### Error: "database password authentication failed"
+
+```bash
+# Check password in OpenBao
+export BAO_TOKEN=$(grep "Initial Root Token:" init.txt | awk '{print $NF}')
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
+  openbao bao kv get secret/myapp/database
+
+# Should show: ORDER_DB_PASSWORD=postgres
+
+# If wrong, update it:
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
+  openbao bao kv put secret/myapp/database \
+  ORDER_DB_PASSWORD=postgres \
+  ORDER_DB_URL=postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable
+
+# Restart app to reload secrets
+docker compose restart app
+```
+
+#### No products showing in UI
+
+```bash
+# Check database has data
+docker exec -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d orderpipeline \
+  -c "SELECT COUNT(*) FROM merchant_items;"
+
+# If 0, re-run migrations
+docker compose restart migrator
+sleep 5
+docker compose restart app
+```
+
+### Application Issues
+
+#### Port already in use
+
+```bash
+# Find and kill process using port 3000
+lsof -ti:3000 | xargs kill -9
+
+# Restart services
+docker compose --profile openfga up -d
+```
+
+#### Container keeps restarting
+
+```bash
+# Check logs for errors
+docker logs app --tail 50
+
+# Common issues:
+# - OpenBao sealed → Run ./scripts/unseal_openbao.sh
+# - Database not ready → Wait 10 seconds: sleep 10 && docker compose restart app
+# - Missing secrets → Check .env has BAO_ROLE_ID and BAO_SECRET_ID
 ```
 
 ---
 
-## Security Notes
+## Reference
 
-### OpenBao Unsealing
-- OpenBao seals on every restart by design for security
-- **Always unseal after container restarts**
-- Requires 2 out of 3 unseal keys (Shamir threshold)
-- Keys are in `init.txt` (keep this file secure!)
+### Service Startup Order
 
-### AppRole Credentials
-- `BAO_ROLE_ID`: Not secret, like a username
-- `BAO_SECRET_ID`: Secret, like a password (rotatable)
-- Stored in `.bao.env` and `.env`
-- Used for machine-to-machine authentication
+Docker Compose handles dependencies automatically via `depends_on`:
 
-### Authorization
-- Anonymous users: Can browse and shop
-- Merchants (user:bob): Can add inventory
-- Admins (user:alice): Can view all, no merchant access
+1. **PostgreSQL** - Database for both app and OpenFGA
+2. **OpenBao** - Secret management (must be unsealed manually after init)
+3. **Infrastructure** - Kafka, Restate, Jaeger, MailHog
+4. **OpenFGA Setup**:
+   - `setup_openfga_postgres.sh` - Creates `openfga` database
+   - `openfga-migrator` - Runs database migrations
+   - `openfga` - Authorization service starts
+   - `seed_openfga.sh` - Uploads model + seeds permissions
+5. **Application Migrations** - `migrator` seeds merchant_items
+6. **Application** - `app` and `emailworker` start
+7. **Auto-registration** - `restate-registrar` registers app with Restate
 
----
-
-## Architecture Details
-
-### How Secrets Are Loaded
+### Architecture
 
 ```
-1. App starts → config.Load()
-2. Tries OpenBao authentication
-   ├─ Gets VAULT_ADDR, BAO_ROLE_ID, BAO_SECRET_ID from env
-   ├─ Authenticates via AppRole
-   └─ Receives authentication token
-3. Fetches secrets from OpenBao
-   ├─ secret/data/myapp/xendit → XENDIT_SECRET_KEY, XENDIT_CALLBACK_TOKEN
-   ├─ secret/data/myapp/openrouter → OPENROUTER_API_KEY
-   └─ secret/data/myapp/database → ORDER_DB_PASSWORD
-4. Stores in config struct + exports to os.Setenv()
-5. If OpenBao fails → Falls back to .env variables
+┌─────────────────────────────────────────────────────────┐
+│                    Docker Compose Stack                  │
+├─────────────────────────────────────────────────────────┤
+│ postgres   - Database (orderpipeline + openfga)         │
+│ openbao    - Secret Management (port 8200)              │
+│ kafka      - Message Queue (port 9092)                  │
+│ restate    - Workflow Engine (port 8080, 9070)          │
+│ jaeger     - Observability (port 16686)                 │
+│ mailhog    - Email Testing (port 1025, 8025)            │
+│ openfga    - Authorization (port 8081)                  │
+│ app        - Main Application (port 3000, 9081)         │
+│ emailworker- Email Worker                               │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Secret Management Flow
+
+```
+Application Startup
+        ↓
+    config.Load()
+        ↓
+  Check if OpenBao is available
+        ↓
+  Authenticate with AppRole
+  (BAO_ROLE_ID + BAO_SECRET_ID from .env)
+        ↓
+    Fetch Secrets from OpenBao:
+    • XENDIT_SECRET_KEY
+    • XENDIT_CALLBACK_TOKEN
+    • OPENROUTER_API_KEY
+    • ORDER_DB_PASSWORD
+    • ORDER_DB_URL
+        ↓
+   ✅ Secrets Loaded from OpenBao
+   (if OpenBao unavailable, fallback to .env)
 ```
 
 ### Authorization Flow
 
 ```
-1. User makes request (with cookie/header)
-2. Middleware extracts principal (user:bob, user:alice, user:anonymous)
-3. Calls OpenFGA Check API
-   ├─ User: principal
-   ├─ Object: store:merchant-001
-   └─ Relation: merchant
-4. OpenFGA evaluates authorization model
-5. Returns allowed: true/false
-6. Middleware allows/denies request
+HTTP Request
+     ↓
+Extract Principal from Cookie/Header
+(user:bob, user:alice, user:anonymous)
+     ↓
+Call OpenFGA Check API
+     ↓
+OpenFGA evaluates against authorization model:
+• User
+• Relation (merchant, admin)
+• Object (store:merchant-001)
+     ↓
+Returns: {"allowed": true/false}
+     ↓
+Allow/Deny Request
 ```
 
----
+### Environment Variables
 
-## Common Commands Reference
+**Required in `.env`:**
+```bash
+# OpenBao AppRole (from init_openbao_docker.sh output)
+BAO_ROLE_ID=<uuid-from-init-script>
+BAO_SECRET_ID=<uuid-from-init-script>
+
+# OpenFGA
+OPENFGA_STORE_ID= <openfga_store_id>
+# Database
+ORDER_DB_PASSWORD=postgres
+
+# Xendit (non-secret URLs)
+XENDIT_SUCCESS_URL=http://localhost:3000
+XENDIT_FAILURE_URL=http://localhost:3000
+```
+
+**Stored in OpenBao by init script:**
+```bash
+# secret/myapp/database
+ORDER_DB_PASSWORD=postgres
+ORDER_DB_URL=postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable
+
+# secret/myapp/xendit (update with real values)
+XENDIT_SECRET_KEY=<your-key>
+XENDIT_CALLBACK_TOKEN=<your-token>
+
+# secret/myapp/openrouter (update with real value)
+OPENROUTER_API_KEY=<your-key>
+```
+
+### Useful Commands
 
 ```bash
 # Service Management
-docker compose up -d                          # Start all services
-docker compose down                           # Stop all services
-docker compose restart app                    # Restart specific service
-docker compose ps                             # List running services
-docker compose logs -f app                    # Follow logs
+docker compose --profile openfga up -d        # Start all services
+docker compose --profile openfga down         # Stop all services
+docker compose restart <service>              # Restart specific service
+docker compose logs -f <service>              # Follow logs
 
-# OpenBao Operations
+# OpenBao
+./scripts/unseal_openbao.sh                   # Unseal OpenBao (NO LOGIN NEEDED)
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao status
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal <key>
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<token> openbao bao kv get <path>
 
-# OpenFGA Operations
-fga model write --store-id <id> --api-url http://localhost:8081 --file policy/authz.fga
-curl -X POST http://localhost:8081/stores/<id>/write -H "Content-Type: application/json" -d '{...}'
-curl -X POST http://localhost:8081/stores/<id>/check -H "Content-Type: application/json" -d '{...}'
+# OpenFGA
+./scripts/seed_openfga.sh                     # Re-setup OpenFGA
 
-# Database Access
-docker exec -e PGPASSWORD=postgres postgres psql -U orderpipelineadmin -d orderpipeline
-docker exec -e PGPASSWORD=postgres postgres psql -U orderpipelineadmin -d orderpipeline -c "<query>"
+# Database Queries
+# Application database
+docker exec -it -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d orderpipeline
 
-# Restate Operations
-docker exec restate restate deployments register http://app:9081
-docker exec restate restate deployments list
+# OpenFGA database
+docker exec -it -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d openfga
+
+# Check tuples in OpenFGA
+docker exec -e PGPASSWORD=postgres postgres \
+  psql -U orderpipelineadmin -d openfga \
+  -c "SELECT user_key, relation, object_type, object_id FROM tuple;"
 ```
+
+### Authorization Roles
+
+| Role      | User ID        | Permissions                              |
+|-----------|----------------|------------------------------------------|
+| Anonymous | user:anonymous | Browse shop, place orders               |
+| Merchant  | user:bob       | Add inventory to store:merchant-001      |
+| Admin     | user:alice     | View all resources, no merchant access   |
+
+---
+
+## Security Notes
+
+### OpenBao Security
+- **Seals on restart**: Must unseal after every container restart using `./scripts/unseal_openbao.sh`
+- **No manual login required**: Application authenticates automatically via AppRole (BAO_ROLE_ID + BAO_SECRET_ID)
+- **Unseal keys**: Stored in `init.txt` (keep secure!)
+- **Threshold**: Requires 2 out of 3 keys to unseal
+- **AppRole**: Machine-to-machine authentication
+
+### OpenFGA Persistence
+- **PostgreSQL**: Authorization data stored in `openfga` database
+- **Survives restarts**: Tuples and models persist across container restarts
+- **Separate database**: Isolated from application data (`orderpipeline`)
+
+### Best Practices
+- ✅ Never commit `init.txt` to version control (.gitignore it)
+- ✅ Never commit `.env` with real secrets to version control
+- ✅ Use OpenBao for all production secrets
+- ✅ Rotate `BAO_SECRET_ID` regularly in production
+- ✅ Use HTTPS/TLS in production
+- ✅ Keep `init.txt` in secure backup (needed to unseal)
 
 ---
 
 ## Support & Documentation
 
-- **OpenBao Docs**: https://openbao.org/docs/
-- **OpenFGA Docs**: https://openfga.dev/docs
-- **Restate Docs**: https://docs.restate.dev/
-- **Xendit Docs**: https://developers.xendit.co/
-
-For issues, check the [Troubleshooting](#troubleshooting) section or review service logs.
+- **OpenBao**: https://openbao.org/docs/
+- **OpenFGA**: https://openfga.dev/docs
+- **Restate**: https://docs.restate.dev/
+- **Xendit**: https://developers.xendit.co/
 
 ---
 
-**Last Updated**: November 13, 2025  
-**Version**: 1.0.0
+**Version**: 2.2.0  
+**Last Updated**: November 17, 2025
