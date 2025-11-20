@@ -1,12 +1,12 @@
 package postgres
 
 import (
-    "context"
-    "database/sql"
-    "fmt"
-    "log"
-    "time"
-    "sync"
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"sync"
+	"time"
 
 	merchantpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/merchant/v1"
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
@@ -60,73 +60,73 @@ func traceDBOperation(ctx context.Context, operation, query string) (context.Con
 
 // InitDatabase initializes the database connection pool and creates tables
 func InitDatabase(config DatabaseConfig) error {
-    // Initialize tracer
-    initTracer()
+	// Initialize tracer
+	initTracer()
 
-    // Use the shared open helper
-    _, err := OpenDatabase(config)
-    return err
+	// Use the shared open helper
+	_, err := OpenDatabase(config)
+	return err
 }
 
 // createTables removed; schema is managed via migrations
 
 // CloseDatabase closes the database connection
 func CloseDatabase() error {
-    dbMu.Lock()
-    defer dbMu.Unlock()
-    if DB != nil {
-        err := DB.Close()
-        DB = nil
-        return err
-    }
-    return nil
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if DB != nil {
+		err := DB.Close()
+		DB = nil
+		return err
+	}
+	return nil
 }
 
 // OpenDatabase opens and configures a PostgreSQL connection, assigns it to the
 // package global DB for backward compatibility, and returns the *sql.DB handle.
 func OpenDatabase(config DatabaseConfig) (*sql.DB, error) {
-    dbMu.Lock()
-    defer dbMu.Unlock()
+	dbMu.Lock()
+	defer dbMu.Unlock()
 
-    if DB != nil {
-        return DB, nil
-    }
+	if DB != nil {
+		return DB, nil
+	}
 
-    // Initialize tracer
-    initTracer()
+	// Initialize tracer
+	initTracer()
 
-    // Build connection string
-    connStr := fmt.Sprintf(
-        "host=%s port=%d dbname=%s user=%s password=%s sslmode=disable",
-        config.Host,
-        config.Port,
-        config.Database,
-        config.User,
-        config.Password,
-    )
+	// Build connection string
+	connStr := fmt.Sprintf(
+		"host=%s port=%d dbname=%s user=%s password=%s sslmode=disable",
+		config.Host,
+		config.Port,
+		config.Database,
+		config.User,
+		config.Password,
+	)
 
-    // Open database connection
-    db, err := sql.Open("postgres", connStr)
-    if err != nil {
-        return nil, fmt.Errorf("failed to open database: %w", err)
-    }
+	// Open database connection
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
 
-    // Configure connection pool
-    db.SetMaxOpenConns(25)
-    db.SetMaxIdleConns(5)
-    db.SetConnMaxLifetime(5 * time.Minute)
+	// Configure connection pool
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
-    // Test connection
-    if err := db.Ping(); err != nil {
-        _ = db.Close()
-        return nil, fmt.Errorf("failed to ping database: %w", err)
-    }
+	// Test connection
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
 
-    // Assign to package-level for existing call sites
-    DB = db
+	// Assign to package-level for existing call sites
+	DB = db
 
-    log.Printf("Successfully connected to PostgreSQL database: %s", config.Database)
-    return db, nil
+	log.Printf("Successfully connected to PostgreSQL database: %s", config.Database)
+	return db, nil
 }
 
 // Order ops
@@ -392,7 +392,7 @@ func GetMerchantItems(merchantID string) ([]*merchantpb.Item, error) {
 	}
 
 	query := `
-		SELECT item_id, name, quantity, price
+		SELECT item_id, name, quantity, price, COALESCE(description, '') as description
 		FROM merchant_items
 		WHERE merchant_id = $1
 		ORDER BY item_id
@@ -406,7 +406,7 @@ func GetMerchantItems(merchantID string) ([]*merchantpb.Item, error) {
 	var items []*merchantpb.Item
 	for rows.Next() {
 		var item merchantpb.Item
-		err := rows.Scan(&item.ItemId, &item.Name, &item.Quantity, &item.Price)
+		err := rows.Scan(&item.ItemId, &item.Name, &item.Quantity, &item.Price, &item.Description)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan merchant item: %w", err)
 		}
@@ -422,21 +422,22 @@ func GetMerchantItems(merchantID string) ([]*merchantpb.Item, error) {
 }
 
 // AddMerchantItem adds a new item to a merchant's inventory
-func AddMerchantItem(merchantID, itemID, name string, price float64, quantity int32) error {
+func AddMerchantItem(merchantID, itemID, name, description string, price float64, quantity int32) error {
 	if DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
 	query := `
-		INSERT INTO merchant_items (merchant_id, item_id, name, price, quantity)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO merchant_items (merchant_id, item_id, name, description, price, quantity)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (merchant_id, item_id) DO UPDATE SET
 			name = EXCLUDED.name,
+			description = EXCLUDED.description,
 			price = EXCLUDED.price,
 			quantity = EXCLUDED.quantity,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := DB.Exec(query, merchantID, itemID, name, price, quantity)
+	_, err := DB.Exec(query, merchantID, itemID, name, description, price, quantity)
 	if err != nil {
 		return fmt.Errorf("failed to add merchant item: %w", err)
 	}
@@ -445,17 +446,17 @@ func AddMerchantItem(merchantID, itemID, name string, price float64, quantity in
 }
 
 // UpdateMerchantItem updates an existing merchant item
-func UpdateMerchantItem(merchantID, itemID, name string, price float64, quantity int32) error {
+func UpdateMerchantItem(merchantID, itemID, name, description string, price float64, quantity int32) error {
 	if DB == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
 	query := `
 		UPDATE merchant_items 
-		SET name = $3, price = $4, quantity = $5, updated_at = CURRENT_TIMESTAMP
+		SET name = $3, description = $4, price = $5, quantity = $6, updated_at = CURRENT_TIMESTAMP
 		WHERE merchant_id = $1 AND item_id = $2
 	`
-	result, err := DB.Exec(query, merchantID, itemID, name, price, quantity)
+	result, err := DB.Exec(query, merchantID, itemID, name, description, price, quantity)
 	if err != nil {
 		return fmt.Errorf("failed to update merchant item: %w", err)
 	}

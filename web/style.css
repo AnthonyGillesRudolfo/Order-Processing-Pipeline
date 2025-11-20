@@ -7,6 +7,7 @@ section { background: #fff; border-radius: 8px; padding: 16px; margin: 16px 0; b
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
 .title { font-weight: 600; }
+.description { color: #6b7280; font-size: 0.875rem; line-height: 1.4; }
 .price { color: #111827; }
 .stock { color: #6b7280; font-size: 0.875rem; }
 button { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; background: #f3f4f6; cursor: pointer; }
@@ -103,7 +104,19 @@ pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow: auto; }
   box-sizing: border-box;
 }
 
-.form-group input:focus {
+.form-group textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
   outline: none;
   border-color: #007bff;
   box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);

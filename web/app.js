@@ -44,8 +44,10 @@ let currentCustomerId = 'customer-001'; // Default customer
     PRODUCTS.forEach(p => {
       const card = document.createElement('div');
       card.className = 'card';
+      const description = p.description ? `<div class="description">${p.description}</div>` : '';
       card.innerHTML = `
         <div class="title">${p.name}</div>
+        ${description}
         <div class="price">$${p.price.toFixed(2)}</div>
         <div class="stock">Stock: ${p.quantity}</div>
         <div class="card-actions">
@@ -510,6 +512,7 @@ let currentCustomerId = 'customer-001'; // Default customer
     currentEditingItem = item;
     document.getElementById('item-id').value = item.itemId;
     document.getElementById('item-name').value = item.name;
+    document.getElementById('item-description').value = item.description || '';
     document.getElementById('item-price').value = item.price;
     document.getElementById('item-quantity').value = item.quantity;
     
@@ -521,6 +524,7 @@ let currentCustomerId = 'customer-001'; // Default customer
   async function saveItem() {
     const itemId = document.getElementById('item-id').value;
     const name = document.getElementById('item-name').value;
+    const description = document.getElementById('item-description').value;
     const price = parseFloat(document.getElementById('item-price').value);
     const quantity = parseInt(document.getElementById('item-quantity').value);
 
@@ -540,6 +544,7 @@ let currentCustomerId = 'customer-001'; // Default customer
           merchant_id: currentMerchantId,
           item_id: itemId,
           name: name,
+          description: description,
           price: price,
           quantity: quantity
         })
