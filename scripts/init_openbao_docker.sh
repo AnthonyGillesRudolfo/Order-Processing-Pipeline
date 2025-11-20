@@ -45,16 +45,18 @@ if docker exec openbao wget -qO- http://localhost:8200/v1/sys/init 2>/dev/null |
     exit 0
 fi
 
-echo -e "${YELLOW}⏳ Initializing OpenBao...${NC}"
+echo -e "${YELLOW}⏳ Initializing OpenBao with 3 key shares and threshold of 2...${NC}"
 
-# Initialize OpenBao
-INIT_OUTPUT=$(docker exec openbao bao operator init -key-shares=1 -key-threshold=1 -format=json)
+# Initialize OpenBao with 3 keys, requiring 2 to unseal
+INIT_OUTPUT=$(docker exec openbao bao operator init -key-shares=3 -key-threshold=2 -format=json)
 
-# Parse the output
-UNSEAL_KEY=$(echo "$INIT_OUTPUT" | grep -o '"unseal_keys_b64":\["[^"]*"' | cut -d'"' -f4)
+# Parse the output - get all 3 unseal keys
+UNSEAL_KEY_1=$(echo "$INIT_OUTPUT" | grep -o '"unseal_keys_b64":\["[^"]*"' | cut -d'"' -f4)
+UNSEAL_KEY_2=$(echo "$INIT_OUTPUT" | grep -o '"unseal_keys_b64":\["[^"]*","[^"]*"' | grep -o ',"[^"]*"$' | cut -d'"' -f2)
+UNSEAL_KEY_3=$(echo "$INIT_OUTPUT" | grep -o '"unseal_keys_b64":\["[^"]*","[^"]*","[^"]*"' | grep -o ',"[^"]*"$' | cut -d'"' -f2)
 ROOT_TOKEN=$(echo "$INIT_OUTPUT" | grep -o '"root_token":"[^"]*"' | cut -d'"' -f4)
 
-if [ -z "$UNSEAL_KEY" ] || [ -z "$ROOT_TOKEN" ]; then
+if [ -z "$UNSEAL_KEY_1" ] || [ -z "$UNSEAL_KEY_2" ] || [ -z "$UNSEAL_KEY_3" ] || [ -z "$ROOT_TOKEN" ]; then
     echo -e "${RED}✗ Failed to parse initialization output${NC}"
     exit 1
 fi
@@ -64,23 +66,29 @@ echo ""
 echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}IMPORTANT: Save these credentials securely!${NC}"
 echo -e "${YELLOW}========================================${NC}"
-echo -e "Unseal Key: ${GREEN}$UNSEAL_KEY${NC}"
-echo -e "Root Token: ${GREEN}$ROOT_TOKEN${NC}"
+echo -e "Unseal Key 1: ${GREEN}$UNSEAL_KEY_1${NC}"
+echo -e "Unseal Key 2: ${GREEN}$UNSEAL_KEY_2${NC}"
+echo -e "Unseal Key 3: ${GREEN}$UNSEAL_KEY_3${NC}"
+echo -e "Root Token:   ${GREEN}$ROOT_TOKEN${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
 
-# Save credentials to a file (make sure it's in .gitignore)
-CREDS_FILE="./openbao-credentials.txt"
+# Save credentials to init.txt (matches deployment guide)
+CREDS_FILE="./init.txt"
 cat > "$CREDS_FILE" <<EOF
-OpenBao Credentials (Generated: $(date))
+OpenBao Initialization Output (Generated: $(date))
 ========================================
-Unseal Key: $UNSEAL_KEY
-Root Token: $ROOT_TOKEN
+Unseal Key 1: $UNSEAL_KEY_1
+Unseal Key 2: $UNSEAL_KEY_2
+Unseal Key 3: $UNSEAL_KEY_3
+
+Initial Root Token: $ROOT_TOKEN
 ========================================
 
 IMPORTANT: Keep these credentials safe!
-- The unseal key is needed to unseal OpenBao after restart
+- Any 2 of the 3 unseal keys are needed to unseal OpenBao after restart
 - The root token has full access to OpenBao
+- Distribute the 3 unseal keys to different trusted parties for security
 
 This file should NEVER be committed to version control!
 EOF
@@ -89,10 +97,12 @@ echo -e "${GREEN}✓ Credentials saved to: $CREDS_FILE${NC}"
 echo -e "${YELLOW}⚠ Make sure this file is in .gitignore!${NC}"
 echo ""
 
-# Unseal OpenBao
-echo -e "${YELLOW}⏳ Unsealing OpenBao...${NC}"
-docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal "$UNSEAL_KEY" > /dev/null
-echo -e "${GREEN}✓ OpenBao unsealed${NC}"
+# Unseal OpenBao (need 2 out of 3 keys)
+echo -e "${YELLOW}⏳ Unsealing OpenBao (2 out of 3 keys required)...${NC}"
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal "$UNSEAL_KEY_1" > /dev/null
+echo -e "${GREEN}✓ Unseal progress: 1/2${NC}"
+docker exec -e BAO_ADDR=http://127.0.0.1:8200 openbao bao operator unseal "$UNSEAL_KEY_2" > /dev/null
+echo -e "${GREEN}✓ OpenBao unsealed (2/2)${NC}"
 
 # Export token for subsequent commands
 export BAO_TOKEN="$ROOT_TOKEN"
@@ -138,36 +148,27 @@ echo -e "${YELLOW}⏳ Enabling KV v2 secrets engine...${NC}"
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$ROOT_TOKEN" openbao bao secrets enable -version=2 -path=secret kv 2>/dev/null || echo -e "${YELLOW}KV secrets engine already enabled${NC}"
 echo -e "${GREEN}✓ KV v2 secrets engine ready${NC}"
 
-# Store secrets
-echo -e "${YELLOW}⏳ Storing secrets...${NC}"
-echo ""
-echo -e "${BLUE}Please provide your secrets:${NC}"
-echo ""
+# Store default secrets (with placeholders for API keys)
+echo -e "${YELLOW}⏳ Storing default secrets...${NC}"
 
-read -p "Enter XENDIT_SECRET_KEY: " XENDIT_SECRET_KEY
-read -p "Enter XENDIT_CALLBACK_TOKEN: " XENDIT_CALLBACK_TOKEN
-read -p "Enter OPENROUTER_API_KEY: " OPENROUTER_API_KEY
-read -p "Enter ORDER_DB_PASSWORD: " ORDER_DB_PASSWORD
-
-echo ""
-
-# Store Xendit secrets
+# Store Xendit secrets (placeholders - update later)
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$ROOT_TOKEN" openbao bao kv put secret/myapp/xendit \
-    XENDIT_SECRET_KEY="$XENDIT_SECRET_KEY" \
-    XENDIT_CALLBACK_TOKEN="$XENDIT_CALLBACK_TOKEN" > /dev/null
+    XENDIT_SECRET_KEY="your-xendit-secret-key" \
+    XENDIT_CALLBACK_TOKEN="your-xendit-callback-token" > /dev/null
 
-# Store OpenRouter secret
+# Store OpenRouter secret (placeholder - update later)
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$ROOT_TOKEN" openbao bao kv put secret/myapp/openrouter \
-    OPENROUTER_API_KEY="$OPENROUTER_API_KEY" > /dev/null
+    OPENROUTER_API_KEY="your-openrouter-api-key" > /dev/null
 
 # Store Database secret
 docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN="$ROOT_TOKEN" openbao bao kv put secret/myapp/database \
-    ORDER_DB_PASSWORD="$ORDER_DB_PASSWORD" > /dev/null
+    ORDER_DB_PASSWORD="postgres" \
+    ORDER_DB_URL="postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable" > /dev/null
 
-echo -e "${GREEN}✓ All secrets stored successfully${NC}"
+echo -e "${GREEN}✓ Default secrets stored successfully${NC}"
 echo ""
 
-# Append AppRole credentials to credentials file
+# Append AppRole credentials to init.txt
 cat >> "$CREDS_FILE" <<EOF
 
 AppRole Credentials
@@ -176,7 +177,7 @@ Role ID: $ROLE_ID
 Secret ID: $SECRET_ID
 ========================================
 
-Add these to your .env file or docker-compose environment:
+IMPORTANT: Add these to your .env file:
 BAO_ROLE_ID=$ROLE_ID
 BAO_SECRET_ID=$SECRET_ID
 EOF
@@ -185,25 +186,20 @@ echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}Setup Complete!${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
-echo -e "${GREEN}AppRole Credentials:${NC}"
-echo -e "Role ID: ${BLUE}$ROLE_ID${NC}"
-echo -e "Secret ID: ${BLUE}$SECRET_ID${NC}"
+echo -e "${GREEN}✓ Secrets stored in OpenBao:${NC}"
+echo -e "  - secret/myapp/database"
+echo -e "  - secret/myapp/xendit (placeholder)"
+echo -e "  - secret/myapp/openrouter (placeholder)"
 echo ""
-echo -e "${YELLOW}Next Steps:${NC}"
-echo -e "1. Add these environment variables to your ${GREEN}.env${NC} file:"
-echo -e "   ${BLUE}BAO_ROLE_ID=$ROLE_ID${NC}"
-echo -e "   ${BLUE}BAO_SECRET_ID=$SECRET_ID${NC}"
+echo -e "${GREEN}✓ AppRole created${NC}"
 echo ""
-echo -e "2. Or export them in your shell:"
-echo -e "   ${BLUE}export BAO_ROLE_ID=$ROLE_ID${NC}"
-echo -e "   ${BLUE}export BAO_SECRET_ID=$SECRET_ID${NC}"
+echo -e "${YELLOW}IMPORTANT: Save these credentials to .env:${NC}"
+echo -e "${BLUE}BAO_ROLE_ID=$ROLE_ID${NC}"
+echo -e "${BLUE}BAO_SECRET_ID=$SECRET_ID${NC}"
 echo ""
-echo -e "3. Rebuild your application:"
-echo -e "   ${BLUE}docker compose build app emailworker${NC}"
+echo -e "${YELLOW}Unseal keys saved to: init.txt${NC}"
+echo -e "${RED}⚠️  Keep init.txt secure! You need it to unseal OpenBao.${NC}"
 echo ""
-echo -e "4. Start your services:"
-echo -e "   ${BLUE}docker compose up -d${NC}"
-echo ""
-echo -e "${GREEN}✓ OpenBao Web UI available at: http://localhost:8200${NC}"
-echo -e "${YELLOW}  Login with root token: $ROOT_TOKEN${NC}"
+echo -e "${YELLOW}To update API keys in OpenBao:${NC}"
+echo -e "See DEPLOYMENT_GUIDE.md Step 5"
 echo ""
