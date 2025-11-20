@@ -1,0 +1,121 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - master
+      - feature/cd-test
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+env:
+  IMAGE_NAME: order-processing-pipeline
+  APP_DOCKERFILE_PATH: ./Dockerfile
+  MIGRATOR_DOCKERFILE_PATH: ./Dockerfile.migrator
+
+jobs:
+  tests:
+    name: Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Run Go tests
+        run: go test ./... -count=1
+
+  push-ghcr-app:
+    name: Build & Push App (GHCR)
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (app)
+        id: meta_app
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=ref,event=tag
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.APP_DOCKERFILE_PATH }}
+          push: true
+          tags: ${{ steps.meta_app.outputs.tags }}
+          labels: ${{ steps.meta_app.outputs.labels }}
+          platforms: linux/amd64, linux/arm64
+
+  push-ghcr-migrator:
+    name: Build & Push Migrator (GHCR)
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (migrator)
+        id: meta_migrator
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-migrator
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=ref,event=tag
+
+      - name: Build and push migrator image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ env.MIGRATOR_DOCKERFILE_PATH }}
+          push: true
+          tags: ${{ steps.meta_migrator.outputs.tags }}
+          labels: ${{ steps.meta_migrator.outputs.labels }}
+          platforms: linux/amd64, linux/arm64
+
+  

@@ -9,6 +9,24 @@
 <body>
   <div class="container">
     <h1>Order Pipeline Test</h1>
+
+    <section style="margin: 12px 0; padding: 8px; border: 1px dashed #ccc; border-radius: 6px;">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
+        <strong>AuthZ:</strong>
+        <label>Role:
+          <select id="role-select">
+            <option value="">Anonymous</option>
+            <option value="user:alice">Viewer (user:alice)</option>
+            <option value="user:bob">Merchant (user:bob)</option>
+          </select>
+        </label>
+        <label>Act as user:
+          <input id="act-as-input" placeholder="user:alice" style="min-width: 220px" />
+        </label>
+        <button id="act-as-apply">Apply</button>
+        <span id="act-as-status" style="opacity:0.8"></span>
+      </div>
+    </section>
     
 
     <section>
@@ -23,6 +41,7 @@
         </label>
         <button id="refresh-products">Refresh Products</button>
         <button id="add-item-btn">Add New Item</button>
+        <span id="authz-hint" style="margin-left:8px; font-size: 12px; color: #666;"></span>
       </div>
       <div id="products" class="grid"></div>
     </section>

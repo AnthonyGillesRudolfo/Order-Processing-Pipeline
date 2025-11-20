@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+.vscode
+tmp
+*.log
+docs/
+mcp-server/
+test/

@@ -1,43 +1,77 @@
-# version: "3.8"
 services:
+  # ---- OpenBao Secret Management ----
+  openbao:
+    image: openbao/openbao:2.1.0
+    container_name: openbao
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./config.hcl:/vault/config/config.hcl:ro
+      - ./data:/vault/data
+    command: server -config=/vault/config/config.hcl
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8200/v1/sys/health?standbyok=true"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: orderpipeline
+      POSTGRES_USER: orderpipelineadmin
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderpipelineadmin -d orderpipeline -h 127.0.0.1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   kafka:
     image: apache/kafka:latest
     container_name: kafka
-    ports:
-      - "9092:9092"
+    ports: ["9092:9092"]
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:29093
-
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 
   restate:
     image: restatedev/restate:latest
     container_name: restate
     ports:
-      - "8080:8080"   # Restate Runtime API (invoke/bind services)
-      - "9070:9070"   # Admin/Console API
+      - "8080:8080"   # runtime
+      - "9070:9070"   # admin
+    depends_on: [kafka]
     restart: unless-stopped
-
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 8080 && nc -z localhost 9070"]
       interval: 10s
       timeout: 3s
       retries: 10
 
-
   mailhog:
     image: mailhog/mailhog:latest
+    container_name: mailhog
     ports:
-      - "1025:1025"  # SMTP
-      - "8025:8025"  # Web UI
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -46,13 +80,224 @@ services:
       - SPAN_STORAGE_TYPE=memory
       - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "6831:6831/udp" # Jaeger Agent
-      - "14268:14268"   # Jaeger Collector
-      - "4317:4317"     # OTLP gRPC receiver
-      - "4318:4318"     # OTLP HTTP receiver
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
 
-  
+  # ---- runs ONCE, migrates schema, then exits ----
+  migrator:
+    image: ghcr.io/anthonygillesrudolfo/order-processing-pipeline:sha-393406f
+    container_name: migrator
+    build:
+      context: .
+      dockerfile: Dockerfile.migrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: postgres://orderpipelineadmin:postgres@postgres:5432/orderpipeline?sslmode=disable
+    entrypoint: ["/bin/sh","-lc"]
+    command: |
+      echo "Running migrations against $$DB_URL";
+      out=$(/usr/local/bin/migrate -verbose -path /migrations -database "$$DB_URL" up 2>&1) || rc=$$?;
+      printf "%s\n" "$$out";
+      if [ "$${rc:-0}" -ne 0 ]; then
+        echo "migrate failed with $${rc:-0}";
+        echo "$$out" | grep -qi 'no change' && { echo "No change detected; success."; exit 0; };
+        exit "$${rc}";
+      fi
+    restart: "no"
+
+  # ---- your application ----
+  app:
+    image: order-processing-pipeline:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app
+    ports:
+      - "3000:3000"  # Web UI
+      - "9081:9081"  # Restate server
+    depends_on:
+      openbao:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+      restate:
+        condition: service_started
+      jaeger:
+        condition: service_started
+    environment:
+      # OpenBao Configuration
+      # IMPORTANT: Replace BAO_ROLE_ID and BAO_SECRET_ID with your actual credentials
+      # obtained from running ./scripts/init_openbao_docker.sh
+      VAULT_ADDR: http://openbao:8200
+      BAO_ROLE_ID: ${BAO_ROLE_ID:-}
+      BAO_SECRET_ID: ${BAO_SECRET_ID:-}
+
+      # Postgres
+      ORDER_DB_HOST: postgres
+      ORDER_DB_PORT: 5432
+      ORDER_DB_USER: orderpipelineadmin
+      # ORDER_DB_PASSWORD is fetched from OpenBao at runtime
+      ORDER_DB_NAME: orderpipeline
+
+      # Kafka (set both for safety)
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+      # Restate
+      RESTATE_RUNTIME_URL: http://restate:8080
+
+      # SMTP
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+
+      # Web UI inside image
+      WEB_DIR: /app/web
+
+      # OTLP to Jaeger (avoid localhost inside container)
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: order-processing-pipeline
+      OTEL_RESOURCE_ATTRIBUTES: service.name=order-processing-pipeline
+      OTEL_LOG_LEVEL: debug
+
+      # Authz (OpenFGA)
+      OPENFGA_API_URL: http://openfga:8080
+      OPENFGA_STORE_ID: ${OPENFGA_STORE_ID:-}
+
+      # Xendit URLs (non-secret)
+      XENDIT_SUCCESS_URL: ${XENDIT_SUCCESS_URL:-}
+      XENDIT_FAILURE_URL: ${XENDIT_FAILURE_URL:-}
+
+  # ---- optional: email worker ----
+  emailworker:
+    image: order-processing-pipeline:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emailworker
+    entrypoint: ["/app/emailworker"]
+    depends_on:
+      openbao:
+        condition: service_healthy
+      app:
+        condition: service_started
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      # OpenBao Configuration
+      VAULT_ADDR: http://openbao:8200
+      BAO_ROLE_ID: ${BAO_ROLE_ID:-}
+      BAO_SECRET_ID: ${BAO_SECRET_ID:-}
+
+      # Kafka
+      KAFKA_BROKERS: kafka:9092
+      
+      # Postgres
+      ORDER_DB_HOST: postgres
+      ORDER_DB_PORT: 5432
+      ORDER_DB_USER: orderpipelineadmin
+      # ORDER_DB_PASSWORD is fetched from OpenBao at runtime
+      ORDER_DB_NAME: orderpipeline
+      
+      # SMTP
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+
+      # Tracing for the worker
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: emailworker
+      OTEL_RESOURCE_ATTRIBUTES: service.name=emailworker
+      OTEL_LOG_LEVEL: debug
+
+  # ---- one-shot: auto-register via Restate CLI ----
+  restate-registrar:
+    image: restatedev/restate:latest
+    container_name: restate-registrar
+    depends_on:
+      restate:
+        condition: service_started
+      app:
+        condition: service_started
+    environment:
+      RESTATE_ADMIN_URL: http://restate:9070
+    entrypoint: ["restate"]
+    command: ["deployments", "register", "http://app:9081", "--yes"]
+    restart: on-failure
+
+  # ---- OpenFGA authorization service (in-memory datastore) ----
+  openfga:
+    image: openfga/openfga:latest
+    container_name: openfga
+    profiles: ["openfga"]
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: memory   # for dev. Use postgres in prod.
+    ports:
+      - "8081:8080"                      # avoid clashing with Restate’s 8080
+    restart: unless-stopped
+
+  openfga-playground:
+    image: ghcr.io/openfga/playground:latest
+    container_name: openfga-playground
+    profiles: ["openfga"]
+    environment:
+      # Point the UI to the in-cluster OpenFGA API (not localhost)
+      OPENFGA_API_URL: http://openfga:8080
+      FGA_API_URL: http://openfga:8080
+      NEXT_PUBLIC_OPENFGA_API_URL: http://openfga:8080
+      NEXT_PUBLIC_FGA_API_URL: http://openfga:8080
+    depends_on:
+      - openfga
+    ports:
+      - "3001:3000"
+  # ---- MCP server (runs tools for agents/clients) ----
+  mcp:
+    image: python:3.12-slim
+    container_name: mcp
+    working_dir: /srv
+    volumes:
+      - ./mcp-server:/srv:ro
+    environment:
+      # Point to in-cluster services
+      RESTATE_RUNTIME_URL: http://restate:8080
+      AP2_BASE: http://app:3000
+      # Telemetry to in-cluster Jaeger (HTTP exporter)
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      OTEL_SERVICE_NAME: mcp-server
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      restate:
+        condition: service_started
+      app:
+        condition: service_started
+      jaeger:
+        condition: service_started
+    entrypoint: ["/bin/sh","-lc"]
+    command:
+      - |
+        pip install --no-cache-dir \
+          mcp \
+          httpx \
+          opentelemetry-api \
+          opentelemetry-sdk \
+          opentelemetry-exporter-otlp-proto-http \
+          opentelemetry-instrumentation-httpx \
+        && python /srv/main.py
+    restart: unless-stopped
+
 volumes:
-  jaeger_data:
-    
+  postgres_data:

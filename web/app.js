@@ -17,6 +17,12 @@ let currentCustomerId = 'customer-001'; // Default customer
   const cartRefreshBtn = $('#cart-refresh-btn');
   
   const ordersListEl = document.getElementById('orders-list');
+  // AuthZ controls
+  const actAsInput = document.getElementById('act-as-input');
+  const actAsApply = document.getElementById('act-as-apply');
+  const actAsStatus = document.getElementById('act-as-status');
+  const roleSelect = document.getElementById('role-select');
+  const authzHint = document.getElementById('authz-hint');
 
     // Tambahkan setelah deklarasi elemen DOM
     const modalEl = document.getElementById('modal');
@@ -52,6 +58,41 @@ let currentCustomerId = 'customer-001'; // Default customer
       }
       productsEl.appendChild(card);
     });
+  }
+
+  // --- Authz helper ---
+  async function authzCheck(object, relation) {
+    try {
+      // Optional principal from localStorage for demo/impersonation
+      const p = (localStorage.getItem('principal') || '').trim();
+      const qp = new URLSearchParams({ object, relation });
+      if (p) qp.set('principal', p);
+      const res = await fetch(`/authz/check?${qp.toString()}`);
+      if (!res.ok) return false;
+      const j = await res.json();
+      return !!j.allowed;
+    } catch { return false }
+  }
+
+  function setActAsCookie(principal) {
+    if (principal) {
+      document.cookie = `act_as=${principal}; path=/`;
+      localStorage.setItem('principal', principal);
+      actAsStatus.textContent = `Acting as ${principal}`;
+    } else {
+      // Clear cookie
+      document.cookie = 'act_as=; Max-Age=0; path=/';
+      localStorage.removeItem('principal');
+      actAsStatus.textContent = 'Anonymous';
+    }
+  }
+
+  function toStoreKey(merchantId) {
+    // Map m_001 -> merchant-001 (store id namespace)
+    if (merchantId && merchantId.startsWith('m_')) {
+      return 'merchant-' + merchantId.slice(2);
+    }
+    return merchantId;
   }
   
   function renderBasket() {
@@ -288,6 +329,7 @@ let currentCustomerId = 'customer-001'; // Default customer
     basket.clear(); // Clear basket when switching merchants
     loadProducts();
     loadCart(); // Reload cart from backend
+    gateMerchantUI();
   };
   
   refreshProductsBtn.onclick = () => {
@@ -351,6 +393,45 @@ let currentCustomerId = 'customer-001'; // Default customer
     loadCart();
   }, 500);
   loadOrders();
+  gateMerchantUI();
+
+  async function gateMerchantUI() {
+    const addBtn = document.getElementById('add-item-btn');
+    const storeKey = toStoreKey(currentMerchantId);
+    const isMerchant = await authzCheck(`store:${storeKey}`, 'merchant');
+    if (isMerchant) {
+      addBtn.classList.remove('hidden');
+      if (authzHint) authzHint.textContent = 'You can add items (merchant)';
+    } else {
+      addBtn.classList.add('hidden');
+      if (authzHint) authzHint.textContent = 'Add item hidden (not merchant)';
+    }
+  }
+
+  // Wire up impersonation controls
+  (function initAuthZControls() {
+    const saved = localStorage.getItem('principal') || '';
+    if (actAsInput) actAsInput.value = saved;
+    if (roleSelect) {
+      // Set dropdown based on saved principal
+      roleSelect.value = saved || '';
+    }
+    setActAsCookie(saved);
+
+    if (actAsApply) actAsApply.onclick = async () => {
+      const p = (actAsInput.value || '').trim();
+      setActAsCookie(p);
+      if (roleSelect) roleSelect.value = p;
+      await gateMerchantUI();
+    };
+
+    if (roleSelect) roleSelect.onchange = async () => {
+      const p = roleSelect.value;
+      if (actAsInput) actAsInput.value = p;
+      setActAsCookie(p);
+      await gateMerchantUI();
+    };
+  })();
 
   async function loadOrders() {
     try {
@@ -359,12 +440,12 @@ let currentCustomerId = 'customer-001'; // Default customer
       const data = await res.json();
       const orders = data.orders || [];
       ordersListEl.innerHTML = '';
-      orders.forEach(o => {
+      orders.forEach(async (o) => {
         const div = document.createElement('div');
         div.className = 'order-card';
         const items = (o.items || []).map(it => `${(it.name || it.product_id)} x${it.quantity}`).join(', ');
         const inv = o.invoice_url ? `<a href="${o.invoice_url}" target="_blank" rel="noopener">invoice</a>` : '-';
-        div.innerHTML = `
+        let actions = `
           <div><b>ID</b>: <code>${o.id}</code></div>
           <div><b>Status</b>: ${o.status} | <b>Payment</b>: ${o.payment_status || '-'}</div>
           <div><b>Items</b>: ${items || '-'}</div>
@@ -384,8 +465,15 @@ let currentCustomerId = 'customer-001'; // Default customer
               `<span style="color: #28a745; font-weight: bold;">✓ Order Completed</span>` : ''}
             ${o.status === 'RETURNED' ? 
               `<span style="color: #dc3545; font-weight: bold;">↩ Order Returned</span>` : ''}
-          </div>
-        `;
+          </div>`;
+        // Gate Refund button by check(order:{id}, can_refund)
+        const allowRefund = await authzCheck(`order:${o.id}`, 'can_refund');
+        if (o.status === 'DELIVERED' && allowRefund) {
+          actions = actions.replace('</div>`','') + `
+            <button onclick="refundOrder('${o.id}')" style="background-color: #6c757d; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-left: 8px;">Refund</button>
+          </div>`;
+        }
+        div.innerHTML = actions;
         ordersListEl.appendChild(div);
       });
     } catch {}
@@ -690,3 +778,14 @@ let currentCustomerId = 'customer-001'; // Default customer
   window.deliverOrder = deliverOrder;
   window.confirmOrder = confirmOrder;
   window.returnOrder = returnOrder;
+
+  async function refundOrder(orderId) {
+    if (!confirm('Refund this order?')) return;
+    try {
+      const response = await fetch(`/api/orders/${orderId}/refund`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      if (!response.ok) throw new Error(`Refund failed: ${response.status}`);
+      showModal('Success', 'Refund requested');
+      await loadOrders();
+    } catch (e) { showModal('Error', String(e)) }
+  }
+  window.refundOrder = refundOrder;

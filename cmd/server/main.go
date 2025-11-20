@@ -18,6 +18,7 @@ import (
 	orderpb "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/gen/go/order/v1"
 	internalcart "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/cart"
 	appconfig "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/config"
+	"github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/authz"
 	internalmerchant "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/merchant"
 	internalorder "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/order"
 	internalpayment "github.com/AnthonyGillesRudolfo/Order-Processing-Pipeline/internal/payment"
@@ -86,8 +87,8 @@ func newSQLDB(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger) (*sql.D
     return db, nil
 }
 
-func registerWebServer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner, prod *events.Producer, db *sql.DB, repo *postgres.Repository) {
-    httpServer := newWebServer(cfg.HTTP.Addr, prod, db, repo)
+func registerWebServer(lc fx.Lifecycle, cfg appconfig.Config, logger *log.Logger, shutdowner fx.Shutdowner, prod *events.Producer, db *sql.DB, repo *postgres.Repository, az authz.Client) {
+    httpServer := newWebServer(cfg.HTTP.Addr, prod, db, repo, az)
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
 			go func() {
@@ -563,6 +564,7 @@ func main() {
             buildRestateServer,
             newKafkaProducer,
             newSQLDB,
+            authz.NewFromEnv,
             func(db *sql.DB) *postgres.Repository { return postgres.NewRepository(db) },
         ),
         fx.Invoke(
@@ -613,25 +615,61 @@ type checkoutRequest struct {
 	MerchantID string         `json:"merchant_id"`
 }
 
-func newWebServer(addr string, prod *events.Producer, db *sql.DB, repo *postgres.Repository) *http.Server {
-	mux := http.NewServeMux()
+func newWebServer(addr string, prod *events.Producer, db *sql.DB, repo *postgres.Repository, az authz.Client) *http.Server {
+    mux := http.NewServeMux()
 
-	// Static web files under / (index.html) and /static/*
-	_, src, _, _ := runtime.Caller(0)
-	base := filepath.Dir(src) // cmd/server
-	webDir := filepath.Join(base, "..", "..", "web")
-	webDir, _ = filepath.Abs(webDir)
+    // Static web files under / (index.html) and /static/*)
+    // Prefer WEB_DIR env (docker sets WEB_DIR=/app/web). Fallbacks for local dev.
+    webDir := os.Getenv("WEB_DIR")
+    if webDir == "" {
+        // Common runtime image path where Dockerfile copies assets
+        webDir = "/app/web"
+    }
+    if st, err := os.Stat(webDir); err != nil || !st.IsDir() {
+        // Fallback to source-relative path for local `go run`.
+        if _, src, _, ok := runtime.Caller(0); ok {
+            base := filepath.Dir(src) // cmd/server
+            guess := filepath.Join(base, "..", "..", "web")
+            if abs, err := filepath.Abs(guess); err == nil {
+                webDir = abs
+            } else {
+                webDir = guess
+            }
+        }
+    }
 
-	fileServer := http.FileServer(http.Dir(webDir))
-	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
-	mux.Handle("/", fileServer)
+    fileServer := http.FileServer(http.Dir(webDir))
+    mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
+    mux.Handle("/", fileServer)
 
     // API
     mux.Handle("/api/checkout", otelhttp.NewHandler(http.HandlerFunc(handleCheckout), "checkout"))
-    // Orders routes registered via internal/api using repository
-    internalapi.RegisterOrdersRoutes(mux, repo)
+    // Orders list route
+    mux.Handle("/api/orders", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        internalapi.HandleOrdersList(repo, w, r)
+    }), "orders-list"))
+    // Orders subtree with authz guard for critical actions
+    // Guard critical sub-actions via middleware object mapping
+    ordersGuard := authz.Require(az, func(r *http.Request) (string, string) {
+        // POST /api/orders/{id}/refund -> can_refund on order:{id}
+        path := strings.TrimPrefix(r.URL.Path, "/api/orders/")
+        if r.Method == http.MethodPost && strings.HasSuffix(path, "/refund") {
+            id := strings.TrimSuffix(path, "/refund")
+            if id != "" { return "order:" + id, "can_refund" }
+        }
+        return "", ""
+    })
+    mux.Handle("/api/orders/", otelhttp.NewHandler(ordersGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        internalapi.HandleOrders(repo, w, r)
+    })), "orders"))
     // Merchants + Cart routes via internal/api
     internalapi.RegisterMerchantRoutes(mux, repo)
+    // Stores alias routes with authz guards
+    internalapi.RegisterStoreRoutes(mux, repo, az)
     internalapi.RegisterCartRoutes(mux)
     mux.Handle("/api/debug/fix-orders", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handleFixOrders(repo, w, r) }), "fix-orders"))
     // Webhooks via internal/api
@@ -640,10 +678,67 @@ func newWebServer(addr string, prod *events.Producer, db *sql.DB, repo *postgres
     // AP2 endpoints via internal/api
     internalapi.RegisterAP2Routes(mux)
 
-	return &http.Server{
-		Addr:    addr,
-		Handler: withCORS(mux),
-	}
+    // Lightweight authz check endpoint for UI gating
+    mux.Handle("/authz/check", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        q := r.URL.Query()
+        object := q.Get("object")
+        relation := q.Get("relation")
+        // Optional principal override for UI gating in dev; if missing, use request-derived principal
+        principal := q.Get("principal")
+        if object == "" || relation == "" {
+            http.Error(w, "object and relation required", http.StatusBadRequest)
+            return
+        }
+        if principal == "" {
+            principal = authz.PrincipalFromRequest(r)
+        }
+        allowed, err := az.Check(r.Context(), principal, object, relation)
+        w.Header().Set("Content-Type", "application/json")
+        if err != nil {
+            w.WriteHeader(http.StatusOK)
+            _ = json.NewEncoder(w).Encode(map[string]any{"allowed": false, "error": "authz_error"})
+            return
+        }
+        _ = json.NewEncoder(w).Encode(map[string]any{"allowed": allowed})
+    }), "authz-check"))
+
+    // Optional: impersonation endpoints (admins only)
+    mux.Handle("/impersonate", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        q := r.URL.Query()
+        principal := q.Get("principal")
+        if principal == "" {
+            http.Error(w, "principal required", http.StatusBadRequest)
+            return
+        }
+        real := authz.PrincipalFromRequest(r)
+        // Require admin on org:acme for impersonation
+        allowed, err := az.Check(r.Context(), real, "org:acme", "admin")
+        if err != nil || !allowed {
+            http.Error(w, "forbidden", http.StatusForbidden)
+            return
+        }
+        http.SetCookie(w, &http.Cookie{Name: "act_as", Value: principal, Path: "/", HttpOnly: false})
+        w.Header().Set("Content-Type", "application/json")
+        _ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "real_user": real, "act_as": principal})
+    }), "impersonate"))
+    mux.Handle("/impersonate/clear", otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        http.SetCookie(w, &http.Cookie{Name: "act_as", Value: "", Path: "/", MaxAge: -1})
+        w.Header().Set("Content-Type", "application/json")
+        _ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+    }), "impersonate-clear"))
+
+    return &http.Server{
+        Addr:    addr,
+        Handler: withCORS(mux),
+    }
 }
 
 // GET /api/orders → list recent orders with payment + items
