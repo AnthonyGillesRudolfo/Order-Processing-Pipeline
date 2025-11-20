@@ -188,7 +188,7 @@ func AddItem(ctx restate.ObjectContext, req *merchantpb.AddItemRequest) (*mercha
 
 	// Persist to database using restate.Run for durability
 	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		return nil, postgres.AddMerchantItem(merchantID, req.ItemId, req.Name, req.Price, req.Quantity)
+		return nil, postgres.AddMerchantItem(merchantID, req.ItemId, req.Name, req.Description, req.Price, req.Quantity)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add item to database: %w", err)
@@ -202,6 +202,7 @@ func AddItem(ctx restate.ObjectContext, req *merchantpb.AddItemRequest) (*mercha
 		if it.ItemId == req.ItemId {
 			// Update existing item
 			it.Name = req.Name
+			it.Description = req.Description
 			it.Price = req.Price
 			it.Quantity = req.Quantity
 			restate.Set(ctx, "items", items)
@@ -212,10 +213,11 @@ func AddItem(ctx restate.ObjectContext, req *merchantpb.AddItemRequest) (*mercha
 
 	// Add new item
 	newItem := &merchantpb.Item{
-		ItemId:   req.ItemId,
-		Name:     req.Name,
-		Price:    req.Price,
-		Quantity: req.Quantity,
+		ItemId:      req.ItemId,
+		Name:        req.Name,
+		Description: req.Description,
+		Price:       req.Price,
+		Quantity:    req.Quantity,
 	}
 	items = append(items, newItem)
 	restate.Set(ctx, "items", items)
@@ -245,19 +247,28 @@ func UpdateItem(ctx restate.ObjectContext, req *merchantpb.UpdateItemRequest) (*
 
 	// Persist to database using restate.Run for durability
 	_, err := restate.Run(ctx, func(ctx restate.RunContext) (any, error) {
-		return nil, postgres.UpdateMerchantItem(merchantID, req.ItemId, req.Name, req.Price, req.Quantity)
+		return nil, postgres.UpdateMerchantItem(merchantID, req.ItemId, req.Name, req.Description, req.Price, req.Quantity)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update item in database: %w", err)
 	}
 
-	// Update local state
+	// Update local state - load from DB if not already in state
 	items, _ := getOrInitItems(ctx)
+	if len(items) == 0 {
+		// State is empty, try loading from database
+		dbItems, dbErr := postgres.GetMerchantItems(merchantID)
+		if dbErr == nil {
+			items = dbItems
+		}
+	}
+
 	found := false
 	for _, it := range items {
 		if it.ItemId == req.ItemId {
 			found = true
 			it.Name = req.Name
+			it.Description = req.Description
 			it.Price = req.Price
 			it.Quantity = req.Quantity
 			break
@@ -265,7 +276,20 @@ func UpdateItem(ctx restate.ObjectContext, req *merchantpb.UpdateItemRequest) (*
 	}
 
 	if !found {
-		return nil, fmt.Errorf("item not found: %s", req.ItemId)
+		// Item not in state but exists in DB (we just updated it), reload from DB
+		dbItems, dbErr := postgres.GetMerchantItems(merchantID)
+		if dbErr == nil {
+			items = dbItems
+			for _, it := range items {
+				if it.ItemId == req.ItemId {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("item not found: %s", req.ItemId)
+		}
 	}
 
 	restate.Set(ctx, "items", items)
@@ -273,10 +297,11 @@ func UpdateItem(ctx restate.ObjectContext, req *merchantpb.UpdateItemRequest) (*
 	log.Printf("[Merchant %s] Updated item %s: %s (price: %.2f, stock: %d)",
 		merchantID, req.ItemId, req.Name, req.Price, req.Quantity)
 	return &merchantpb.UpdateItemResponse{Item: &merchantpb.Item{
-		ItemId:   req.ItemId,
-		Name:     req.Name,
-		Price:    req.Price,
-		Quantity: req.Quantity,
+		ItemId:      req.ItemId,
+		Name:        req.Name,
+		Description: req.Description,
+		Price:       req.Price,
+		Quantity:    req.Quantity,
 	}}, nil
 }
 

@@ -88,6 +88,7 @@ type Item struct {
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Quantity      int32                  `protobuf:"varint,3,opt,name=quantity,proto3" json:"quantity,omitempty"` // default 999 enforced by service/storage
 	Price         float64                `protobuf:"fixed64,4,opt,name=price,proto3" json:"price,omitempty"`
+	Description   string                 `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -148,6 +149,13 @@ func (x *Item) GetPrice() float64 {
 		return x.Price
 	}
 	return 0
+}
+
+func (x *Item) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
 }
 
 type GetMerchantRequest struct {
@@ -507,6 +515,7 @@ type AddItemRequest struct {
 	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	Price         float64                `protobuf:"fixed64,4,opt,name=price,proto3" json:"price,omitempty"`
 	Quantity      int32                  `protobuf:"varint,5,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	Description   string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -576,6 +585,13 @@ func (x *AddItemRequest) GetQuantity() int32 {
 	return 0
 }
 
+func (x *AddItemRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
 type AddItemResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Item          *Item                  `protobuf:"bytes,1,opt,name=item,proto3" json:"item,omitempty"`
@@ -627,6 +643,7 @@ type UpdateItemRequest struct {
 	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	Price         float64                `protobuf:"fixed64,4,opt,name=price,proto3" json:"price,omitempty"`
 	Quantity      int32                  `protobuf:"varint,5,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	Description   string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -694,6 +711,13 @@ func (x *UpdateItemRequest) GetQuantity() int32 {
 		return x.Quantity
 	}
 	return 0
+}
+
+func (x *UpdateItemRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
 }
 
 type UpdateItemResponse struct {
@@ -845,12 +869,13 @@ const file_merchant_proto_rawDesc = "" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12(\n" +
-	"\x05items\x18\x03 \x03(\v2\x12.merchant.sv1.ItemR\x05items\"e\n" +
+	"\x05items\x18\x03 \x03(\v2\x12.merchant.sv1.ItemR\x05items\"\x87\x01\n" +
 	"\x04Item\x12\x17\n" +
 	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\bquantity\x18\x03 \x01(\x05R\bquantity\x12\x14\n" +
-	"\x05price\x18\x04 \x01(\x01R\x05price\"5\n" +
+	"\x05price\x18\x04 \x01(\x01R\x05price\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\"5\n" +
 	"\x12GetMerchantRequest\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\"o\n" +
@@ -875,23 +900,25 @@ const file_merchant_proto_rawDesc = "" +
 	"\x0fincrement_delta\x18\x04 \x01(\x05H\x00R\x0eincrementDeltaB\x0e\n" +
 	"\fstock_update\"=\n" +
 	"\x13UpdateStockResponse\x12&\n" +
-	"\x04item\x18\x01 \x01(\v2\x12.merchant.sv1.ItemR\x04item\"\x90\x01\n" +
+	"\x04item\x18\x01 \x01(\v2\x12.merchant.sv1.ItemR\x04item\"\xb2\x01\n" +
 	"\x0eAddItemRequest\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\x12\x17\n" +
 	"\aitem_id\x18\x02 \x01(\tR\x06itemId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
 	"\x05price\x18\x04 \x01(\x01R\x05price\x12\x1a\n" +
-	"\bquantity\x18\x05 \x01(\x05R\bquantity\"9\n" +
+	"\bquantity\x18\x05 \x01(\x05R\bquantity\x12 \n" +
+	"\vdescription\x18\x06 \x01(\tR\vdescription\"9\n" +
 	"\x0fAddItemResponse\x12&\n" +
-	"\x04item\x18\x01 \x01(\v2\x12.merchant.sv1.ItemR\x04item\"\x93\x01\n" +
+	"\x04item\x18\x01 \x01(\v2\x12.merchant.sv1.ItemR\x04item\"\xb5\x01\n" +
 	"\x11UpdateItemRequest\x12\x1f\n" +
 	"\vmerchant_id\x18\x01 \x01(\tR\n" +
 	"merchantId\x12\x17\n" +
 	"\aitem_id\x18\x02 \x01(\tR\x06itemId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x14\n" +
 	"\x05price\x18\x04 \x01(\x01R\x05price\x12\x1a\n" +
-	"\bquantity\x18\x05 \x01(\x05R\bquantity\"<\n" +
+	"\bquantity\x18\x05 \x01(\x05R\bquantity\x12 \n" +
+	"\vdescription\x18\x06 \x01(\tR\vdescription\"<\n" +
 	"\x12UpdateItemResponse\x12&\n" +
 	"\x04item\x18\x01 \x01(\v2\x12.merchant.sv1.ItemR\x04item\"M\n" +
 	"\x11DeleteItemRequest\x12\x1f\n" +

@@ -16,6 +16,7 @@ message Item {
   string name = 2;
   int32 quantity = 3; // default 999 enforced by service/storage
   double price = 4;
+  string description = 5;
 }
 
 message GetMerchantRequest {
@@ -57,6 +58,7 @@ message AddItemRequest {
   string name = 3;
   double price = 4;
   int32 quantity = 5;
+  string description = 6;
 }
 
 message AddItemResponse {
@@ -69,6 +71,7 @@ message UpdateItemRequest {
   string name = 3;
   double price = 4;
   int32 quantity = 5;
+  string description = 6;
 }
 
 message UpdateItemResponse {
