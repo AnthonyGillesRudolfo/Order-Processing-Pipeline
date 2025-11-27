@@ -333,6 +333,53 @@ docker exec -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=$BAO_TOKEN \
   openbao bao kv get secret/myapp/xendit
 ```
 
+### RAG Index Management
+
+The RAG (Retrieval-Augmented Generation) system uses Pinecone to index merchant items for semantic search.
+
+#### Populate/Update the Index
+
+**Option 1: Manual Population (Recommended for initial setup)**
+
+```bash
+cd rag
+uv run python ingest_data.py ingest --clear
+```
+
+- Use `--clear` flag to clear existing data and re-populate from scratch
+- Fetches all merchant items from PostgreSQL and indexes them in Pinecone
+- Required after database schema changes or bulk data updates
+
+**Option 2: Via MCP Tool (AI-triggered)**
+
+```bash
+uv run internal/llm/openrouter_client.py "populate the RAG index with merchant data"
+```
+
+The AI will call the `ingest_merchant_data` tool automatically.
+
+#### Test RAG Search
+
+```bash
+cd rag
+
+# Search without merchant filter
+uv run python ingest_data.py search "programming guide book"
+
+# Search with specific merchant
+uv run python ingest_data.py search "programming" --merchant-id=3
+```
+
+#### When to Re-index
+
+You need to re-run ingestion when:
+- New merchant items are added to the database
+- Existing items are updated (name, description, price)
+- You want to clear and refresh the index
+- After restoring from database backup
+
+**Note**: The RAG system uses local embeddings (nomic-ai/nomic-embed-text-v1.5) which run on your CPU. No external API calls are made for embeddings.
+
 ---
 
 ## Verification

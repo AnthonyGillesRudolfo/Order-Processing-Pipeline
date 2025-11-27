@@ -267,6 +267,50 @@
         "type": "string",
         "description": "Formatted list of all orders with detailed information including items, statuses, and amounts"
       }
+    },
+    {
+      "name": "search_merchant_items",
+      "description": "Search merchant items using semantic search (RAG). Find products by description, category, or features.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query (e.g., 'wireless headphones', 'italian food')"
+          },
+          "merchant_id": {
+            "type": "string",
+            "description": "Filter by specific merchant (optional)"
+          },
+          "k": {
+            "type": "integer",
+            "description": "Number of results (default 5)"
+          }
+        },
+        "required": ["query"]
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Search results with matching items"
+      }
+    },
+    {
+      "name": "ingest_merchant_data",
+      "description": "Populate the RAG index with merchant items from the database. Run this to update the search index.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "clear_existing": {
+            "type": "boolean",
+            "description": "Clear existing index before ingestion (default False)"
+          }
+        },
+        "required": []
+      },
+      "output_schema": {
+        "type": "string",
+        "description": "Ingestion result message"
+      }
     }
   ],
   "resources": [

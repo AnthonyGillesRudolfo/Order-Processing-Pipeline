@@ -6,7 +6,11 @@ import httpx
 import json
 import logging
 import os
+import sys
 import uuid
+
+# Add rag directory to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'rag'))
 
 from mcp.server.fastmcp import FastMCP
 from opentelemetry import trace
@@ -16,6 +20,17 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
+
+# Import RAG service
+try:
+    from rag_service import get_rag_service
+    RAG_AVAILABLE = True
+    _rag_logger = logging.getLogger("mcp.rag")
+    _rag_logger.info("RAG service imported successfully")
+except ImportError as e:
+    RAG_AVAILABLE = False
+    _rag_logger = logging.getLogger("mcp.rag")
+    _rag_logger.warning(f"RAG service not available: {e}")
 
 # Initialize the MCP server
 mcp = FastMCP("Order Processing Pipeline MCP Server")
@@ -200,6 +215,16 @@ async def list_tools() -> str:
                 "name": "list_orders",
                 "description": "List all orders with comprehensive details (items, prices, order status, payment status, shipping status)",
                 "parameters": "None",
+            },
+            {
+                "name": "search_merchant_items",
+                "description": "Search merchant items using semantic search (RAG). Find products by description, category, or features.",
+                "parameters": "query (required): Search query (e.g., 'wireless headphones', 'italian food'), merchant_id (optional): Filter by specific merchant, k (optional): Number of results (default 5)",
+            },
+            {
+                "name": "ingest_merchant_data",
+                "description": "Populate the RAG index with merchant items from the database. Run this to update the search index.",
+                "parameters": "clear_existing (optional): Clear existing index before ingestion (default False)",
             },
         ]
 
@@ -1031,6 +1056,148 @@ async def list_orders() -> str:
 
         span.set_attribute("mcp.result.length", len(response))
         return response
+
+# RAG-powered search tools
+@mcp.tool()
+async def search_merchant_items(query: str, merchant_id: str = None, k: int = 5) -> str:
+    """
+    Search merchant items using semantic search powered by RAG.
+    Find products by description, category, features, or any natural language query.
+    
+    Args:
+        query: Search query (e.g., "wireless headphones", "italian pasta", "chocolate dessert")
+        merchant_id: Optional merchant ID to filter results (e.g., "m_001")
+        k: Number of results to return (default: 5)
+    """
+    with _tool_span("search_merchant_items") as span:
+        span.set_attribute("mcp.rag.query", query)
+        span.set_attribute("mcp.rag.k", k)
+        if merchant_id:
+            span.set_attribute("mcp.rag.merchant_id", merchant_id)
+        
+        if not RAG_AVAILABLE:
+            span.set_status(Status(StatusCode.ERROR, "RAG not available"))
+            return "Error: RAG service is not available. Please ensure all dependencies are installed."
+        
+        if not query:
+            span.set_status(Status(StatusCode.ERROR, "missing query"))
+            return "Error: query parameter is required. Please provide a search query."
+        
+        try:
+            # Initialize RAG service
+            rag_service = get_rag_service()
+            rag_service.initialize()
+            
+            # Build filter for merchant_id if provided
+            filter_dict = None
+            if merchant_id:
+                # Convert merchant_id to integer if it's in format m_001
+                try:
+                    if merchant_id.startswith("m_"):
+                        merchant_num = int(merchant_id.split("_")[1])
+                        filter_dict = {"merchant_id": merchant_num}
+                    else:
+                        filter_dict = {"merchant_id": int(merchant_id)}
+                except (ValueError, IndexError):
+                    span.set_attribute("mcp.rag.invalid_merchant_id", True)
+                    _rag_logger.warning(f"Invalid merchant_id format: {merchant_id}")
+            
+            # Perform semantic search
+            span.set_attribute("mcp.rag.search_started", True)
+            results = rag_service.similarity_search_with_score(
+                query=query,
+                k=k,
+                filter=filter_dict
+            )
+            
+            span.set_attribute("mcp.rag.results_count", len(results))
+            
+            if not results:
+                return f"No items found matching: '{query}'"
+            
+            # Format results
+            response = f"Search Results for '{query}':\n\n"
+            response += f"Found {len(results)} matching items:\n\n"
+            
+            for i, (doc, score) in enumerate(results, 1):
+                metadata = doc.metadata
+                
+                response += f"{i}. **{metadata.get('item_name', 'Unknown Item')}**\n"
+                response += f"   Merchant: {metadata.get('merchant_name', 'Unknown')}\n"
+                response += f"   Price: ${metadata.get('price', 0):.2f}\n"
+                
+                # Only show category if it exists
+                if 'category' in metadata and metadata['category']:
+                    response += f"   Category: {metadata['category']}\n"
+                
+                response += f"   Stock: {metadata.get('stock_quantity', 0)} units\n"
+                response += f"   Relevance Score: {score:.4f}\n"
+                response += f"   Item ID: {metadata.get('item_id', 'N/A')}\n"
+                
+                # Format merchant_id properly
+                merchant_id = metadata.get('merchant_id', '')
+                if isinstance(merchant_id, int):
+                    response += f"   Merchant ID: m_{merchant_id:03d}\n"
+                else:
+                    response += f"   Merchant ID: {merchant_id}\n"
+                
+                # Extract description from page_content
+                content_lines = doc.page_content.split('\n')
+                for line in content_lines:
+                    if line.startswith('Description:'):
+                        desc = line.replace('Description:', '').strip()
+                        response += f"   Description: {desc}\n"
+                        break
+                
+                response += "\n"
+            
+            span.set_attribute("mcp.result.length", len(response))
+            return response
+            
+        except Exception as e:
+            error_msg = f"Search failed: {str(e)}"
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, error_msg))
+            _rag_logger.error(error_msg, exc_info=True)
+            return f"Error performing search: {str(e)}"
+
+
+@mcp.tool()
+async def ingest_merchant_data(clear_existing: bool = False) -> str:
+    """
+    Populate the RAG index with merchant items from the database.
+    This fetches all merchant items from PostgreSQL and indexes them in Pinecone for semantic search.
+    
+    Args:
+        clear_existing: If True, clear the existing index before ingestion (default: False)
+    """
+    with _tool_span("ingest_merchant_data") as span:
+        span.set_attribute("mcp.rag.clear_existing", clear_existing)
+        
+        if not RAG_AVAILABLE:
+            span.set_status(Status(StatusCode.ERROR, "RAG not available"))
+            return "Error: RAG service is not available. Please ensure all dependencies are installed."
+        
+        try:
+            # Import ingestion function
+            from ingest_data import ingest_merchant_items
+            
+            # Perform ingestion
+            _rag_logger.info("Starting merchant data ingestion...")
+            ingest_merchant_items(clear_existing=clear_existing)
+            
+            success_msg = "✓ Successfully ingested merchant items into RAG index. Search is now available."
+            span.set_attribute("mcp.rag.ingestion_success", True)
+            _rag_logger.info(success_msg)
+            return success_msg
+            
+        except Exception as e:
+            error_msg = f"Ingestion failed: {str(e)}"
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, error_msg))
+            _rag_logger.error(error_msg, exc_info=True)
+            return f"Error during ingestion: {str(e)}"
+
 
 # Main entry point
 if __name__ == "__main__":

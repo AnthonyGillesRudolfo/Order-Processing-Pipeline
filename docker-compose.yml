@@ -290,6 +290,7 @@ services:
     working_dir: /srv
     volumes:
       - ./mcp-server:/srv:ro
+      - ./rag:/rag:ro
     environment:
       # Point to in-cluster services
       RESTATE_RUNTIME_URL: http://restate:8080
@@ -298,6 +299,15 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
       OTEL_SERVICE_NAME: mcp-server
       PYTHONUNBUFFERED: "1"
+      # OpenBao (note: container must reach host's OpenBao)
+      VAULT_ADDR: http://host.docker.internal:8200
+      BAO_ROLE_ID: ${BAO_ROLE_ID}
+      BAO_SECRET_ID: ${BAO_SECRET_ID}
+      # Database connection
+      ORDER_DB_HOST: postgres
+      ORDER_DB_PORT: 5432
+      ORDER_DB_NAME: orderpipeline
+      ORDER_DB_USER: orderpipelineadmin
     depends_on:
       restate:
         condition: service_started
@@ -315,8 +325,17 @@ services:
           opentelemetry-sdk \
           opentelemetry-exporter-otlp-proto-http \
           opentelemetry-instrumentation-httpx \
+          'langchain>=0.3.0' \
+          'langchain-core>=0.3.0' \
+          'langchain-community>=0.3.0' \
+          'langchain-pinecone>=0.2.0' \
+          'pinecone-client>=5.0.0' \
+          'sentence-transformers>=3.0.0' \
+          'einops>=0.8.0' \
+          'hvac>=2.1.0' \
+          'psycopg2-binary>=2.9.0' \
         && python /srv/main.py
-    restart: unless-stopped
+    # restart: unless-stopped  # Disabled - MCP is stdio-based and exits immediately without TTY
 
 volumes:
   postgres_data:

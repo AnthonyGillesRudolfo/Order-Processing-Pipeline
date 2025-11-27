@@ -4,7 +4,7 @@
         "command": "uv",
         "args": [
           "--directory",
-          "/Users/jocelinearaki/Documents/Project/test-restate/order-processing-pipeline/mcp-server",
+          "/Users/anthonygillesr/Order-Processing-Pipeline/mcp-server",
           "run",
           "main.py"
         ]

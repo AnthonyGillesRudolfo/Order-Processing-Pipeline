@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from importlib import util as importlib_util
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, get_type_hints, get_origin, get_args
 import inspect
 
 import requests
@@ -18,10 +18,17 @@ load_dotenv()
 
 
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-MODEL = os.getenv("OPENROUTER_MODEL", "minimax/minimax-m2:free")
+MODEL = os.getenv("OPENROUTER_MODEL", "x-ai/grok-4.1-fast")
 API_KEY = os.getenv("OPENROUTER_API_KEY")
-SYSTEM_PROMPT = "You are an MCP client that calls tools. You can only use the MCP tools, you can't do a web search."
-MANIFEST_PATH = Path("mcp-server/manifest.json")
+
+# API_KEY = "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"
+SYSTEM_PROMPT = """You are an MCP client that calls tools efficiently. You can only use the MCP tools, you can't do a web search.
+
+CRITICAL RULES:
+1. When searching for products by description, features, or categories (e.g., "watch with GPS", "italian food", "wireless headphones"), ALWAYS use search_merchant_items FIRST. This uses semantic search (RAG) to find relevant items quickly.
+2. Only use list_merchant_items if you need to browse a specific merchant's complete catalog after you know their merchant_id.
+3. Do NOT guess merchant IDs - use list_merchants first if you need to discover available merchants.
+4. Avoid making multiple redundant tool calls - use the most efficient tool for the task."""
 MCP_IMPLEMENTATION_PATH = Path("mcp-server/mcpserver.py")
 
 
@@ -42,39 +49,56 @@ class ToolExecutionResult:
     error: Optional[str] = None
 
 
-def _load_manifest_tools(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Translate the MCP manifest tools to the OpenAI-style tool schema."""
-    tools = []
-    for tool in manifest.get("tools", []):
-        tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get(
-                        "input_schema",
-                        {"type": "object", "properties": {}, "required": []},
-                    ),
-                },
-            }
-        )
-    return tools
+def _python_type_to_json_schema(py_type: Any) -> Dict[str, Any]:
+    """Convert Python type hints to JSON Schema."""
+    origin = get_origin(py_type)
+    args = get_args(py_type)
+
+    if py_type is None:
+        return {"type": "null"}
+    
+    # Handle basic types
+    if py_type == str:
+        return {"type": "string"}
+    elif py_type == int:
+        return {"type": "integer"}
+    elif py_type == float:
+        return {"type": "number"}
+    elif py_type == bool:
+        return {"type": "boolean"}
+    
+    # Handle List/Iterable
+    if origin in (list, List, Iterable) or str(py_type).startswith('typing.List'):
+        item_schema = {}
+        if args:
+            item_schema = _python_type_to_json_schema(args[0])
+        return {"type": "array", "items": item_schema}
+    
+    # Handle Dict
+    if origin in (dict, Dict) or str(py_type).startswith('typing.Dict'):
+        return {"type": "object"}
+        
+    # Fallback for string matching (legacy support)
+    type_str = str(py_type)
+    if 'str' in type_str and 'List' not in type_str and 'Dict' not in type_str:
+        return {"type": "string"}
+    elif 'int' in type_str and 'List' not in type_str:
+        return {"type": "integer"}
+        
+    return {"type": "string"}  # Default fallback
 
 
-def _load_manifest() -> Dict[str, Any]:
-    with MANIFEST_PATH.open() as fh:
-        return json.load(fh)
-
-
-def _prepare_tool_handlers(tool_names: Iterable[str]) -> tuple[Dict[str, Any], Optional[BaseException]]:
+def _discover_tools_from_mcp_server() -> tuple[List[Dict[str, Any]], Dict[str, Any], Optional[BaseException]]:
     """
-    Attempt to import the MCP server implementation so we can execute tools locally.
-
-    Returns a mapping of tool name -> coroutine function and any import error encountered.
+    Auto-discover tools from mcpserver.py by finding all async functions.
+    
+    Returns:
+        - List of OpenAI-style tool definitions
+        - Dict mapping tool names to handler functions
+        - Optional import error
     """
     if not MCP_IMPLEMENTATION_PATH.exists():
-        return {}, FileNotFoundError(f"Missing MCP implementation at {MCP_IMPLEMENTATION_PATH}")
+        return [], {}, FileNotFoundError(f"Missing MCP implementation at {MCP_IMPLEMENTATION_PATH}")
 
     try:
         spec = importlib_util.spec_from_file_location("order_processing_mcp", MCP_IMPLEMENTATION_PATH)
@@ -82,15 +106,65 @@ def _prepare_tool_handlers(tool_names: Iterable[str]) -> tuple[Dict[str, Any], O
             raise ImportError("Unable to load MCP implementation module spec")
         module = importlib_util.module_from_spec(spec)
         spec.loader.exec_module(module)
-    except BaseException as exc:  # pragma: no cover - import guard
-        return {}, exc
+    except BaseException as exc:
+        return [], {}, exc
 
-    handlers: Dict[str, Any] = {}
-    for name in tool_names:
-        handler = getattr(module, name, None)
-        if handler is not None and inspect.iscoroutinefunction(handler):
-            handlers[name] = handler
-    return handlers, None
+    tools = []
+    handlers = {}
+    
+    # Discover all async functions (MCP tools)
+    for name, obj in inspect.getmembers(module):
+        if not inspect.iscoroutinefunction(obj):
+            continue
+        
+        # Skip private functions
+        if name.startswith('_'):
+            continue
+            
+        # Get function signature and docstring
+        sig = inspect.signature(obj)
+        doc = inspect.getdoc(obj) or f"Execute {name}"
+        
+        # Build parameter schema from function signature
+        properties = {}
+        required = []
+        
+        try:
+            type_hints = get_type_hints(obj)
+        except:
+            type_hints = {}
+        
+        for param_name, param in sig.parameters.items():
+            # Skip self, cls, and special parameters
+            if param_name in ('self', 'cls', 'args', 'kwargs'):
+                continue
+                
+            param_schema = _python_type_to_json_schema(type_hints.get(param_name, str))
+            param_schema["description"] = f"The {param_name} parameter"
+            properties[param_name] = param_schema
+            
+            # Mark as required if no default value
+            if param.default == inspect.Parameter.empty:
+                required.append(param_name)
+        
+        # Create OpenAI-style tool definition
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": doc if doc else f"Execute {name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+        }
+        
+        tools.append(tool_def)
+        handlers[name] = obj
+    
+    return tools, handlers, None
 
 
 def _call_openrouter(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -196,10 +270,14 @@ def _chat_turn(
 
 
 def main() -> None:
-    manifest = _load_manifest()
-    tools = _load_manifest_tools(manifest)
-    tool_names = [tool["function"]["name"] for tool in tools]
-    handlers, import_error = _prepare_tool_handlers(tool_names)
+    # Auto-discover tools from mcpserver.py
+    tools, handlers, import_error = _discover_tools_from_mcp_server()
+    
+    if import_error:
+        print(f"Warning: Failed to load MCP tools: {import_error}")
+        print("Continuing with no tools available...")
+        tools = []
+        handlers = {}
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 

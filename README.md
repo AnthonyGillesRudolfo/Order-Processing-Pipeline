@@ -169,10 +169,85 @@ See [AP2 Integration Guide](docs/AP2_INTEGRATION.md) for detailed documentation.
 - ✅ Xendit payment integration
 - ✅ AP2 payment protocol support
 - ✅ MCP server with cart management tools
+- ✅ **RAG-powered semantic search** (Langchain + Pinecone)
 - ✅ Automated webhook handling
 - ✅ Real-time order tracking
 - ✅ Modern web UI
 - ✅ Restate workflow orchestration
+- ✅ OpenBao secret management
+
+## 🔍 RAG (Semantic Search)
+
+The system includes a powerful RAG (Retrieval-Augmented Generation) module for semantic search of merchant items:
+
+### Features
+- **Semantic Search** - Find products using natural language queries
+- **Vector Embeddings** - Uses HuggingFace's nomic-embed-text-v1.5 model
+- **Pinecone Vector DB** - Scalable vector storage and search
+- **OpenBao Integration** - Secure secret management
+- **MCP Tools** - Search directly from MCP clients
+
+### Quick Start
+
+```bash
+# Install dependencies
+pip install -e .
+
+# Configure environment
+export VAULT_ADDR=http://localhost:8200
+export BAO_ROLE_ID=<your-role-id>
+export BAO_SECRET_ID=<your-secret-id>
+
+# Store secrets in OpenBao
+vault kv put secret/myapp/pinecone \
+  PINECONE_API_KEY="your-key" \
+  PINECONE_ENVIRONMENT="us-east-1"
+
+vault kv put secret/myapp/database \
+  ORDER_DB_PASSWORD="your-password"
+
+# Run setup and tests
+cd rag/
+python setup_and_test.py
+
+# Ingest merchant items
+python ingest_data.py ingest
+
+# Search items
+python ingest_data.py search "italian pasta"
+```
+
+### MCP Tools
+
+```python
+# Search merchant items
+search_merchant_items(
+    query="wireless headphones",
+    merchant_id="m_001",  # optional
+    k=5
+)
+
+# Update search index
+ingest_merchant_data(clear_existing=False)
+```
+
+### Example Searches
+
+```bash
+# By product type
+search_merchant_items(query="headphones", k=5)
+
+# By cuisine
+search_merchant_items(query="italian food", k=5)
+
+# Filter by merchant
+search_merchant_items(query="chocolate", merchant_id="m_001", k=3)
+
+# By features
+search_merchant_items(query="wireless audio device", k=5)
+```
+
+See [RAG Documentation](rag/README.md) and [Quick Start Guide](rag/QUICKSTART.md) for detailed setup.
 
 ---
 
